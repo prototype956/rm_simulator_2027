@@ -11,7 +11,7 @@ use avian3d::prelude::CollisionEventsEnabled;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::{Children, Commands, Component, Entity, Name, On, Query, Res, With};
 use bevy::world_serialization::{WorldInstanceReady, WorldInstanceSpawner};
-use rand::Rng;
+use rand::{Rng, RngExt};
 use std::collections::HashMap;
 
 #[derive(Component)]
@@ -146,7 +146,7 @@ fn setup_power_rune(
         return;
     }
 
-    let red_clockwise = rand::thread_rng().gen_bool(0.5);
+    let red_clockwise = rand::rng().random_bool(0.5);
 
     for (index, face_entity) in faces {
         let mode = if index & 2 > 0 {

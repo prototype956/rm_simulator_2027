@@ -21,6 +21,8 @@ impl Infantry {
 pub struct InfantryChassis {
     pub yaw: f32,
     pub yaw_velocity: f32,
+    pub roll: f32,
+    pub pitch: f32,
 }
 
 #[derive(Component, Default)]

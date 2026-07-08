@@ -40,15 +40,19 @@ macro_rules! input {
 
 const CHASSIS_ROTATION_RESPONSE: f32 = 40.0;
 const CHASSIS_ROTATION_STOP_EPSILON: f32 = 1e-3;
+const CHASSIS_TILT_LIMIT: f32 = 20.0 * std::f32::consts::PI / 180.0;
 
 fn update_chassis_rotation(
     chassis_transform: &mut Transform,
     chassis_data: &mut InfantryChassis,
-    input: f32,
-    rotation_speed: f32,
+    yaw_input: f32,
+    roll_input: f32,
+    pitch_input: f32,
+    yaw_rotation_speed: f32,
+    tilt_rotation_speed: f32,
     dt: f32,
 ) {
-    let target_yaw_velocity = input * rotation_speed;
+    let target_yaw_velocity = yaw_input * yaw_rotation_speed;
     let response = 1.0 - (-CHASSIS_ROTATION_RESPONSE * dt).exp();
     chassis_data.yaw_velocity += (target_yaw_velocity - chassis_data.yaw_velocity) * response;
 
@@ -59,7 +63,16 @@ fn update_chassis_rotation(
     }
 
     chassis_data.yaw += chassis_data.yaw_velocity * dt;
-    chassis_transform.rotation = Quat::from_euler(EulerRot::YXZ, chassis_data.yaw, 0.0, 0.0);
+    chassis_data.roll = (chassis_data.roll + roll_input * tilt_rotation_speed * dt)
+        .clamp(-CHASSIS_TILT_LIMIT, CHASSIS_TILT_LIMIT);
+    chassis_data.pitch = (chassis_data.pitch + pitch_input * tilt_rotation_speed * dt)
+        .clamp(-CHASSIS_TILT_LIMIT, CHASSIS_TILT_LIMIT);
+    chassis_transform.rotation = Quat::from_euler(
+        EulerRot::YXZ,
+        chassis_data.yaw,
+        chassis_data.pitch,
+        chassis_data.roll,
+    );
 }
 
 pub fn auto_aim_switch(keyboard: Res<ButtonInput<KeyCode>>, enabled: Res<SubscribeAutoAim>) {
@@ -117,7 +130,10 @@ pub fn vehicle_controls(
         &mut chassis_transform,
         &mut chassis_data,
         input,
+        0.0,
+        0.0,
         config.vehicle.rotation_speed,
+        config.vehicle.tilt_rotation_speed,
         dt,
     );
 }
@@ -158,13 +174,18 @@ pub fn remote_vehicle_controls(
         boost,
     );
 
-    let input = input!(keyboard, KeyU, KeyO);
+    let yaw_input = input!(keyboard, KeyU, KeyO);
+    let roll_input = input!(keyboard, BracketLeft, BracketRight);
+    let pitch_input = input!(keyboard, Semicolon, Quote);
     let (mut chassis_transform, mut chassis_data) = chassis.into_inner();
     update_chassis_rotation(
         &mut chassis_transform,
         &mut chassis_data,
-        input,
+        yaw_input,
+        roll_input,
+        pitch_input,
         config.vehicle.rotation_speed,
+        config.vehicle.tilt_rotation_speed,
         dt,
     );
 }
@@ -284,11 +305,32 @@ mod tests {
         let mut transform = Transform::default();
         let mut chassis = InfantryChassis::default();
 
-        update_chassis_rotation(&mut transform, &mut chassis, 1.0, 9.42, 0.016);
+        update_chassis_rotation(
+            &mut transform,
+            &mut chassis,
+            1.0,
+            0.0,
+            0.0,
+            9.42,
+            2.0,
+            0.016,
+        );
 
         assert!(chassis.yaw_velocity > 0.0);
         assert!(chassis.yaw_velocity < 9.42);
         assert!(chassis.yaw > 0.0);
+    }
+
+    #[test]
+    fn chassis_rotation_uses_independent_yaw_and_tilt_speeds() {
+        let mut transform = Transform::default();
+        let mut chassis = InfantryChassis::default();
+
+        update_chassis_rotation(&mut transform, &mut chassis, 1.0, 1.0, -1.0, 8.0, 0.25, 1.0);
+
+        assert!(chassis.yaw_velocity > 0.25);
+        assert_eq!(chassis.roll, 0.25);
+        assert_eq!(chassis.pitch, -0.25);
     }
 
     #[test]
@@ -297,12 +339,40 @@ mod tests {
         let mut chassis = InfantryChassis {
             yaw: 0.0,
             yaw_velocity: 9.42,
+            ..default()
         };
 
         for _ in 0..60 {
-            update_chassis_rotation(&mut transform, &mut chassis, 0.0, 9.42, 0.016);
+            update_chassis_rotation(
+                &mut transform,
+                &mut chassis,
+                0.0,
+                0.0,
+                0.0,
+                9.42,
+                2.0,
+                0.016,
+            );
         }
 
         assert!(chassis.yaw_velocity.abs() < 1e-2);
+    }
+
+    #[test]
+    fn chassis_rotation_bounds_roll_and_pitch_as_swing_angles() {
+        let mut transform = Transform::default();
+        let mut chassis = InfantryChassis::default();
+
+        update_chassis_rotation(&mut transform, &mut chassis, 0.0, 1.0, -1.0, 2.0, 2.0, 10.0);
+        assert_eq!(chassis.roll, CHASSIS_TILT_LIMIT);
+        assert_eq!(chassis.pitch, -CHASSIS_TILT_LIMIT);
+
+        update_chassis_rotation(&mut transform, &mut chassis, 1.0, -1.0, 1.0, 2.0, 2.0, 10.0);
+
+        assert_eq!(chassis.roll, -CHASSIS_TILT_LIMIT);
+        assert_eq!(chassis.pitch, CHASSIS_TILT_LIMIT);
+        let (_, pitch, roll) = transform.rotation.to_euler(EulerRot::YXZ);
+        assert!((roll + CHASSIS_TILT_LIMIT).abs() < 1e-5);
+        assert!((pitch - CHASSIS_TILT_LIMIT).abs() < 1e-5);
     }
 }

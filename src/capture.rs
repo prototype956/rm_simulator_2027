@@ -7,6 +7,9 @@ use bevy::core_pipeline::prepass::DepthPrepass;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
 
+use crate::config::SimulationConfig;
+use crate::metalfx::MetalFxTemporalUpscaling;
+
 pub use driver::CaptureBundle;
 
 #[derive(Component)]
@@ -34,8 +37,16 @@ pub fn setup_capture_camera(world: &mut World) {
 
     let render_target_handle = world.resource::<ImageHandle>().0.clone();
     let fov = world.resource::<CameraFov>().0;
+    let metalfx = world
+        .get_resource::<SimulationConfig>()
+        .filter(|config| cfg!(target_os = "macos") && config.render.metalfx_temporal)
+        .map(|config| MetalFxTemporalUpscaling {
+            scale_factor: config.render.metalfx_scale,
+            frame_generation: config.render.metalfx_frame_generation,
+            reset: true,
+        });
 
-    world.spawn((
+    let mut capture_camera = world.spawn((
         Camera3d::default(),
         Tonemapping::None,
         RenderTarget::Image(render_target_handle.into()),
@@ -54,6 +65,9 @@ pub fn setup_capture_camera(world: &mut World) {
         DepthPrepass,
         CaptureCamera,
     ));
+    if let Some(metalfx) = metalfx {
+        capture_camera.insert(metalfx);
+    }
 }
 
 #[derive(Component)]

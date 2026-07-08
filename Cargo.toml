@@ -24,7 +24,7 @@ default = ["talos"]
 bevy = { workspace = true }
 avian3d = { workspace = true }
 bevy-inspector-egui = { workspace = true }
-rand = "0"
+rand = "0.10"
 r2r = { version = "0", optional = true }
 talos-ipc = { path = "crates/talos-ipc", optional = true }
 crossbeam-channel = "0"
@@ -39,6 +39,12 @@ serde_json = "1"
 clap = { version = "4.6", features = ["derive"] }
 ffmpeg-next = { version = "8.1.0", optional = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-metal = { version = "0.3.2", default-features = false }
+objc2-metal-fx = "0.3.2"
+wgpu = "29.0.3"
+
 [[bin]]
 name = "talos_gimbal_mock_server"
 path = "src/bin/talos_gimbal_mock_server.rs"
@@ -46,3 +52,9 @@ required-features = ["talos", "ffmpeg"]
 
 [patch.crates-io]
 r2r_msg_gen = { path = "third_party/r2r_msg_gen" }
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev]
+opt-level = 1

@@ -77,6 +77,12 @@ pub struct RenderConfig {
     pub illuminance: f32,
     pub shadows: bool,
     pub main_camera_fxaa: bool,
+    #[serde(alias = "main_camera_metalfx_temporal")]
+    pub metalfx_temporal: bool,
+    #[serde(alias = "main_camera_metalfx_frame_generation")]
+    pub metalfx_frame_generation: bool,
+    #[serde(alias = "main_camera_metalfx_scale")]
+    pub metalfx_scale: f32,
 }
 
 impl Default for RenderConfig {
@@ -85,6 +91,9 @@ impl Default for RenderConfig {
             illuminance: 50.0,
             shadows: false,
             main_camera_fxaa: false,
+            metalfx_temporal: cfg!(target_os = "macos"),
+            metalfx_frame_generation: cfg!(target_os = "macos"),
+            metalfx_scale: 2.0,
         }
     }
 }
@@ -106,13 +115,29 @@ impl Default for PhysicsConfig {
 }
 
 #[derive(Deserialize, Reflect, Clone)]
+#[serde(default)]
 pub struct VehicleConfig {
     pub rotation_speed: f32,
+    pub tilt_rotation_speed: f32,
     pub gimbal_rotation_speed: f32,
     pub gimbal_pitch_limit: f32,
     pub max_speed: f32,
     pub linear_acceleration: f32,
     pub acceleration_exponent: f32,
+}
+
+impl Default for VehicleConfig {
+    fn default() -> Self {
+        Self {
+            rotation_speed: 3.0,
+            tilt_rotation_speed: 3.0,
+            gimbal_rotation_speed: 3.0,
+            gimbal_pitch_limit: 0.785,
+            max_speed: 4.0,
+            linear_acceleration: 8.0,
+            acceleration_exponent: 10.0,
+        }
+    }
 }
 
 #[derive(Deserialize, Reflect, Clone)]
@@ -275,14 +300,7 @@ impl Default for SimulationConfig {
                 capture: CapturePipelineConfig::default(),
                 livox_ros: LivoxRosConfig::default(),
                 physics: PhysicsConfig::default(),
-                vehicle: VehicleConfig {
-                    rotation_speed: 3.0,
-                    gimbal_rotation_speed: 3.0,
-                    gimbal_pitch_limit: 0.785,
-                    max_speed: 4.0,
-                    linear_acceleration: 8.0,
-                    acceleration_exponent: 10.0,
-                },
+                vehicle: VehicleConfig::default(),
                 mecanum: MecanumConfig::default(),
                 projectile: ProjectileConfig {
                     lifetime: 5.0,

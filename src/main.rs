@@ -5,6 +5,7 @@ mod components;
 mod config;
 mod dataset;
 mod handler;
+mod metalfx;
 mod robomaster;
 mod setup;
 mod statistic;
@@ -23,6 +24,7 @@ use bevy::prelude::*;
 use bevy::render::settings::{InstanceFlags, RenderCreation, WgpuSettings, WgpuSettingsPriority};
 use bevy::render::{RenderPlugin, RenderSystems};
 use bevy::window::PresentMode;
+use bevy::winit::WinitSettings;
 use bevy_inspector_egui::bevy_egui::EguiPlugin;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use clap::Parser;
@@ -33,6 +35,7 @@ use crate::components::{CameraMode, FollowingType, ProjectileCooldown, Subscribe
 use crate::config::{ConfigPlugin, SimulationConfig};
 use crate::dataset::prelude::DatasetPlugin;
 use crate::handler::{on_activate, on_hit};
+use crate::metalfx::MetalFxTemporalPlugin;
 use crate::robomaster::prelude::RoboMasterPlugins;
 use crate::setup::{setup, setup_collision, setup_dart_launch, setup_ground, setup_vehicle};
 use crate::statistic::ProjectileStatistics;
@@ -150,6 +153,7 @@ fn main() {
             .insert_resource(Gravity(Vec3::ZERO))
             .insert_resource(SubstepCount(config.physics.substep_count))
             .insert_resource(fixed_time_from_config(&config))
+            .insert_resource(WinitSettings::continuous())
             .add_plugins(AutoGenPlugin)
             .run();
         return;
@@ -178,6 +182,7 @@ fn main() {
             .set(render_plugin_for_platform()),
         PhysicsPlugins::default(),
     ));
+    app.insert_resource(WinitSettings::continuous());
 
     if config.debug.egui {
         app.add_plugins(EguiPlugin::default());
@@ -187,6 +192,7 @@ fn main() {
     }
 
     app.add_plugins(RoboMasterPlugins)
+        .add_plugins(MetalFxTemporalPlugin)
         .add_plugins(DatasetPlugin)
         .add_plugins(ConfigPlugin)
         .init_resource::<CameraMode>()

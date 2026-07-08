@@ -3,7 +3,7 @@
 [window]
 # Rendering present mode. Use `auto_no_vsync` to exceed 60Hz for Talos/ROS2 capture.
 # Options: auto_vsync, auto_no_vsync, fifo, fifo_relaxed, mailbox, immediate
-present_mode = "immediate"
+present_mode = "auto_no_vsync"
 
 [debug]
 # Turn these on only when needed; they noticeably reduce FPS.
@@ -21,6 +21,12 @@ enabled = true
 shadows = true
 # Main on-screen camera anti-aliasing.
 main_camera_fxaa = true
+# Enables Apple's MetalFX temporal scaler for color 3D cameras on macOS.
+metalfx_temporal = true
+# Enables MetalFX frame interpolation after temporal upscaling when supported.
+metalfx_frame_generation = true
+# Output/render resolution ratio used by MetalFX temporal upscaling.
+metalfx_scale = 2.0
 illuminance = 500.0
 [capture.color]
 # RGB capture resolution for existing camera pipeline.
@@ -49,6 +55,7 @@ substep_count = 8               # physics substeps per fixed tick
 
 [vehicle]
 rotation_speed = 7.42            # rad/s - chassis rotation speed
+tilt_rotation_speed = 3.0        # rad/s - chassis roll/pitch swing speed
 gimbal_rotation_speed = 3.0     # rad/s - gimbal rotation speed
 gimbal_pitch_limit = 0.785      # rad - gimbal pitch limit (~45 degrees)
 max_speed = 6.0                 # m/s - maximum vehicle speed
