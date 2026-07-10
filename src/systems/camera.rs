@@ -7,9 +7,10 @@ use crate::components::{
     InfantryViewOffset, MainCamera,
 };
 use crate::config::SimulationConfig;
+use crate::systems::ControllerState;
 
-pub fn following_controls(mut mode: ResMut<CameraMode>, keyboard: Res<ButtonInput<KeyCode>>) {
-    if keyboard.just_pressed(KeyCode::F3) {
+pub fn following_controls(mut mode: ResMut<CameraMode>, controller: Res<ControllerState>) {
+    if controller.controlled.switch_camera_just_pressed {
         mode.0 = match mode.0 {
             FollowingType::Free => FollowingType::Robot,
             FollowingType::Robot => FollowingType::ThirdPerson,

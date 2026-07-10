@@ -1,11 +1,13 @@
 mod camera;
 mod chassis_observation;
+mod controller;
 mod debug;
 mod input;
 mod projectile;
 mod uav;
 pub use camera::*;
 pub use chassis_observation::*;
+pub use controller::*;
 pub use debug::*;
 pub use input::*;
 pub use projectile::*;

@@ -40,12 +40,13 @@ use crate::robomaster::prelude::RoboMasterPlugins;
 use crate::setup::{setup, setup_collision, setup_dart_launch, setup_ground, setup_vehicle};
 use crate::statistic::ProjectileStatistics;
 use crate::systems::{
-    ChassisObservationFrame, GameplaySystems, PreviousKinematicState, auto_aim_switch,
-    change_appearance, cleanup_projectiles, dart_launch, following_controls, freecam_controls,
-    gimbal_controls, projectile_aerodynamics, projectile_launch, remote_gimbal_controls,
-    remote_vehicle_controls, screenshot_on_f2, screenshot_saving, setup_projectile,
-    switch_slapper_control, uav_launch, update_chassis_observation, update_help_text,
-    vehicle_controls,
+    ChassisObservationFrame, ControllerState, GameplaySystems, PreviousKinematicState,
+    change_appearance, cleanup_projectiles, clear_controller_input, controller_dart_just_pressed,
+    controller_shoot_pressed, dart_launch, following_controls, freecam_controls, gimbal_controls,
+    projectile_aerodynamics, projectile_launch, remote_gimbal_controls, remote_vehicle_controls,
+    sample_gamepad_controller, sample_keyboard_controller, screenshot_on_f2, screenshot_saving,
+    setup_projectile, switch_slapper_control, uav_launch, update_auto_aim_subscription,
+    update_chassis_observation, update_help_text, vehicle_controls,
 };
 
 /// Command-line arguments for the application
@@ -199,6 +200,7 @@ fn main() {
         .init_resource::<ProjectileStatistics>()
         .init_resource::<ChassisObservationFrame>()
         .init_resource::<PreviousKinematicState>()
+        .init_resource::<ControllerState>()
         .register_type::<ProjectileStatistics>()
         .insert_resource(Gravity(Vec3::NEG_Y * 9.81))
         .insert_resource(SubstepCount(config.physics.substep_count))
@@ -230,7 +232,10 @@ fn main() {
             (
                 // Input phase
                 (
-                    auto_aim_switch,
+                    clear_controller_input,
+                    sample_keyboard_controller,
+                    sample_gamepad_controller,
+                    update_auto_aim_subscription,
                     following_controls,
                     switch_slapper_control,
                     vehicle_controls.run_if(|mode: Res<CameraMode>| mode.0 != FollowingType::Free),
@@ -238,6 +243,7 @@ fn main() {
                     gimbal_controls,
                     remote_gimbal_controls,
                 )
+                    .chain()
                     .in_set(GameplaySystems::Input),
                 // GameLogic phase
                 (change_appearance, update_help_text).in_set(GameplaySystems::GameLogic),
@@ -267,13 +273,13 @@ fn main() {
             PostUpdate,
             projectile_launch
                 .after(TransformSystems::Propagate)
-                .run_if(|keyboard: Res<ButtonInput<KeyCode>>| keyboard.pressed(KeyCode::Space)),
+                .run_if(controller_shoot_pressed),
         )
         .add_systems(
             PostUpdate,
             dart_launch
                 .after(TransformSystems::Propagate)
-                .run_if(|keyboard: Res<ButtonInput<KeyCode>>| keyboard.just_pressed(KeyCode::KeyG)),
+                .run_if(controller_dart_just_pressed),
         )
         .add_systems(PostUpdate, uav_launch.after(TransformSystems::Propagate))
         .add_systems(FixedUpdate, projectile_aerodynamics);

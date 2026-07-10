@@ -1,6 +1,7 @@
 use avian3d::prelude::*;
+use bevy::input::gamepad::{GamepadRumbleIntensity, GamepadRumbleRequest};
 use bevy::prelude::*;
-use core::f32::consts::PI;
+use core::{f32::consts::PI, time::Duration};
 
 use crate::components::{
     Controlled, DartLaunch, DartProjectile, DartSetting, GameLayer, Infantry, InfantryChassis,
@@ -10,6 +11,7 @@ use crate::components::{
 use crate::config::SimulationConfig;
 use crate::robomaster::prelude::Projectile;
 use crate::statistic::ProjectileStatistics;
+use crate::systems::{ControllerState, request_controller_rumble};
 
 pub fn setup_projectile(
     mut commands: Commands,
@@ -40,6 +42,8 @@ pub fn projectile_launch(
     config: Res<SimulationConfig>,
     _asset_server: Res<AssetServer>,
     mut commands: Commands,
+    controller: Option<Res<ControllerState>>,
+    mut rumble_requests: MessageWriter<GamepadRumbleRequest>,
     setting: Res<ProjectileSetting>,
     infantry: Single<
         (&Transform, &LinearVelocity, &AngularVelocity),
@@ -86,6 +90,15 @@ pub fn projectile_launch(
         )),
         Projectile,
     ));
+    request_controller_rumble(
+        controller.as_deref(),
+        &mut rumble_requests,
+        GamepadRumbleIntensity {
+            strong_motor: 0.45,
+            weak_motor: 0.2,
+        },
+        Duration::from_millis(80),
+    );
 }
 
 pub fn projectile_aerodynamics(
@@ -125,6 +138,8 @@ pub fn dart_launch(
     mut commands: Commands,
     config: Res<SimulationConfig>,
     mut stats: ResMut<ProjectileStatistics>,
+    controller: Option<Res<ControllerState>>,
+    mut rumble_requests: MessageWriter<GamepadRumbleRequest>,
     setting: Res<DartSetting>,
     launchers: Query<&GlobalTransform, With<DartLaunch>>,
 ) {
@@ -182,6 +197,15 @@ pub fn dart_launch(
         Projectile,
         DartProjectile,
     ));
+    request_controller_rumble(
+        controller.as_deref(),
+        &mut rumble_requests,
+        GamepadRumbleIntensity {
+            strong_motor: 0.65,
+            weak_motor: 0.35,
+        },
+        Duration::from_millis(140),
+    );
 }
 
 pub fn cleanup_projectiles(

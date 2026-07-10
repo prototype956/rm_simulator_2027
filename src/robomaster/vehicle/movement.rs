@@ -35,28 +35,28 @@ impl VehicleDynamic {
         &mut self,
         forces: &mut ForcesItem,
         mass: f32,
-        gimbal_transform: &GlobalTransform,
+        movement_frame: &GlobalTransform,
         input: Vec2,
         dt: f32,
         boost: f32,
     ) {
         let lin_vel = forces.linear_velocity();
-        let acceleration = self.linear_accelerate(input, gimbal_transform, lin_vel, boost);
+        let acceleration = self.linear_accelerate(input, movement_frame, lin_vel, boost);
         forces.apply_linear_impulse(acceleration * mass * dt);
     }
 
     fn linear_accelerate(
         &mut self,
         input: Vec2,
-        gimbal_transform: &GlobalTransform,
+        movement_frame: &GlobalTransform,
         current_velocity: Vec3,
         boost: f32,
     ) -> Vec3 {
         if input.length_squared() == 0.0 {
             return Vec3::ZERO;
         }
-        let forward = gimbal_transform.forward().with_y(0.0);
-        let right = gimbal_transform.right().with_y(0.0);
+        let forward = movement_frame.forward().with_y(0.0);
+        let right = movement_frame.right().with_y(0.0);
         let forward_xz = forward.with_y(0.0).normalize_or_zero();
         let right_xz = right.with_y(0.0).normalize_or_zero();
         let dirc = (forward_xz * input.y + right_xz * input.x).normalize_or_zero();
