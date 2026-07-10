@@ -29,20 +29,13 @@ impl RobotConfig {
 }
 
 pub const HERO_ROBOT_CONFIG: RobotConfig =
-    RobotConfig::new(ArmorSpec::Large(LargeArmorLabel::HeroOne), 4);
+    RobotConfig::new(ArmorSpec::Large(LargeArmorLabel::One), 4);
 pub const ENGINEER_ROBOT_CONFIG: RobotConfig =
-    RobotConfig::new(ArmorSpec::Small(SmallArmorLabel::EngineerG), 4);
+    RobotConfig::new(ArmorSpec::Small(SmallArmorLabel::Two), 4);
 pub const INFANTRY_THREE_CONFIG: RobotConfig =
-    RobotConfig::new(ArmorSpec::Small(SmallArmorLabel::InfantryOrHeroThree), 4);
+    RobotConfig::new(ArmorSpec::Small(SmallArmorLabel::Three), 4);
 pub const INFANTRY_FOUR_CONFIG: RobotConfig =
-    RobotConfig::new(ArmorSpec::Small(SmallArmorLabel::InfantryOrHeroFour), 4);
-
-pub const SENTINEL_ROBOT_TWO_CONFIG: RobotConfig =
-    RobotConfig::new(ArmorSpec::Small(SmallArmorLabel::InfantryTwo), 4);
-pub const SENTINEL_ROBOT_THREE_CONFIG: RobotConfig =
-    RobotConfig::new(ArmorSpec::Small(SmallArmorLabel::InfantryOrHeroThree), 4);
-pub const SENTINEL_ROBOT_FOUR_CONFIG: RobotConfig =
-    RobotConfig::new(ArmorSpec::Small(SmallArmorLabel::InfantryOrHeroFour), 4);
+    RobotConfig::new(ArmorSpec::Small(SmallArmorLabel::Four), 4);
 
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub enum Robot {
@@ -52,7 +45,7 @@ pub enum Robot {
     Hero,
 
     /// 工程机器人 - 负责抓取能量单元和团队增益
-    /// - 编号: 2号机  
+    /// - 编号: 2号机
     /// - 特点: 无发射机构、高机动性、特殊任务执行能力
     Engineer,
 
@@ -61,7 +54,7 @@ pub enum Robot {
     /// - 特点: 均衡性能、经验升级系统
     Infantry,
 
-    /// 空中机器人 - 空中支援单位，发射17mm弹丸  
+    /// 空中机器人 - 空中支援单位，发射17mm弹丸
     /// - 编号: 6号机
     /// - 特点: 飞行能力、第一视角画面、激光检测模块
     Aerial,
@@ -89,43 +82,20 @@ mod tests {
     #[test]
     fn robot_configs_preserve_legacy_armor_values() {
         let cases = [
-            (HERO_ROBOT_CONFIG, ArmorType::Large, ArmorLabel::HeroOne, 4),
+            (HERO_ROBOT_CONFIG, ArmorType::Large, ArmorLabel::One, 4),
             (
                 ENGINEER_ROBOT_CONFIG,
                 ArmorType::Small,
-                ArmorLabel::EngineerG,
+                ArmorLabel::Sentry,
                 4,
             ),
             (
                 INFANTRY_THREE_CONFIG,
                 ArmorType::Small,
-                ArmorLabel::InfantryOrHeroThree,
+                ArmorLabel::Three,
                 4,
             ),
-            (
-                INFANTRY_FOUR_CONFIG,
-                ArmorType::Small,
-                ArmorLabel::InfantryOrHeroFour,
-                4,
-            ),
-            (
-                SENTINEL_ROBOT_TWO_CONFIG,
-                ArmorType::Small,
-                ArmorLabel::InfantryTwo,
-                4,
-            ),
-            (
-                SENTINEL_ROBOT_THREE_CONFIG,
-                ArmorType::Small,
-                ArmorLabel::InfantryOrHeroThree,
-                4,
-            ),
-            (
-                SENTINEL_ROBOT_FOUR_CONFIG,
-                ArmorType::Small,
-                ArmorLabel::InfantryOrHeroFour,
-                4,
-            ),
+            (INFANTRY_FOUR_CONFIG, ArmorType::Small, ArmorLabel::Four, 4),
         ];
 
         for (config, armor_type, label, armor_count) in cases {

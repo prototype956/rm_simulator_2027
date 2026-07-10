@@ -7,7 +7,7 @@ use crate::config::SimulationConfig;
 use crate::systems::projectile_launch;
 use crate::talos::capture::{
     TalosCaptureContext, TalosCapturePlugin, TalosFrameStamp, advance_talos_frame_stamp,
-    publish_talos_pose_system,
+    publish_talos_runtime_state_system,
 };
 use bevy::ecs::system::RunSystemOnce;
 use bevy::image::BevyDefault;
@@ -95,12 +95,12 @@ impl Plugin for TalosPlugin {
         app.add_systems(Last, (advance_talos_frame_stamp, heartbeat_system));
         app.add_systems(
             Last,
-            publish_talos_pose_system.after(advance_talos_frame_stamp),
+            publish_talos_runtime_state_system.after(advance_talos_frame_stamp),
         );
         app.add_systems(
             Last,
             crate::talos::ground_truth::publish_ground_truth_system
-                .after(publish_talos_pose_system),
+                .after(publish_talos_runtime_state_system),
         );
         app.add_systems(
             Last,

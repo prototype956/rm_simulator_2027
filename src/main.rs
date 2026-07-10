@@ -1,9 +1,7 @@
 #![allow(dead_code)]
-mod auto_gen;
 mod capture;
 mod components;
 mod config;
-mod dataset;
 mod handler;
 mod metalfx;
 mod robomaster;
@@ -27,13 +25,10 @@ use bevy::window::PresentMode;
 use bevy::winit::WinitSettings;
 use bevy_inspector_egui::bevy_egui::EguiPlugin;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
-use clap::Parser;
 use std::sync::atomic::AtomicBool;
 
-use crate::auto_gen::AutoGenPlugin;
 use crate::components::{CameraMode, FollowingType, ProjectileCooldown, SubscribeAutoAim};
 use crate::config::{ConfigPlugin, SimulationConfig};
-use crate::dataset::prelude::DatasetPlugin;
 use crate::handler::{on_activate, on_hit};
 use crate::metalfx::MetalFxTemporalPlugin;
 use crate::robomaster::prelude::RoboMasterPlugins;
@@ -48,15 +43,6 @@ use crate::systems::{
     setup_projectile, switch_slapper_control, uav_launch, update_auto_aim_subscription,
     update_chassis_observation, update_help_text, vehicle_controls,
 };
-
-/// Command-line arguments for the application
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    /// Enable auto dataset generation mode
-    #[arg(long)]
-    auto_gen: bool,
-}
 
 #[cfg(feature = "ros2")]
 use crate::ros2::plugin::ROS2Plugin;
@@ -120,47 +106,6 @@ fn should_enable_talos_plugin(app: &App) -> bool {
 }
 
 fn main() {
-    let args = Args::parse();
-
-    // Auto-gen mode: minimal setup
-    if args.auto_gen {
-        let config = SimulationConfig::default();
-        let present_mode =
-            present_mode_from_config(&config.window.present_mode).unwrap_or_else(|| {
-                warn!(
-                    "Unknown window.present_mode {:?}, falling back to auto_no_vsync",
-                    config.window.present_mode
-                );
-                PresentMode::AutoNoVsync
-            });
-
-        App::new()
-            .add_plugins((
-                DefaultPlugins
-                    .set(WindowPlugin {
-                        primary_window: Some(Window {
-                            present_mode,
-                            fit_canvas_to_parent: true,
-                            ..default()
-                        }),
-                        ..default()
-                    })
-                    .set(render_plugin_for_platform()),
-                PhysicsPlugins::default(),
-            ))
-            .add_plugins(RoboMasterPlugins)
-            .add_plugins(ConfigPlugin)
-            .add_observer(setup_vehicle)
-            .insert_resource(Gravity(Vec3::ZERO))
-            .insert_resource(SubstepCount(config.physics.substep_count))
-            .insert_resource(fixed_time_from_config(&config))
-            .insert_resource(WinitSettings::continuous())
-            .add_plugins(AutoGenPlugin)
-            .run();
-        return;
-    }
-
-    // Full simulation mode: existing functionality
     let config = SimulationConfig::default();
     let present_mode = present_mode_from_config(&config.window.present_mode).unwrap_or_else(|| {
         warn!(
@@ -194,7 +139,6 @@ fn main() {
 
     app.add_plugins(RoboMasterPlugins)
         .add_plugins(MetalFxTemporalPlugin)
-        .add_plugins(DatasetPlugin)
         .add_plugins(ConfigPlugin)
         .init_resource::<CameraMode>()
         .init_resource::<ProjectileStatistics>()

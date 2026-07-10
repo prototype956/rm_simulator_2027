@@ -20,12 +20,161 @@ use bevy::{
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-const MAX_IN_FLIGHT_FRAMES: usize = 2;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CaptureFrameId(u64);
+
+impl CaptureFrameId {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CaptureChannels(u8);
+
+impl CaptureChannels {
+    pub const RGB: Self = Self(1 << 0);
+    pub const DEPTH: Self = Self(1 << 1);
+    pub const R32_UINT: Self = Self(1 << 2);
+    pub const ALL: Self = Self(Self::RGB.0 | Self::DEPTH.0 | Self::R32_UINT.0);
+
+    const fn for_kind(kind: CapturedFrameKind) -> Self {
+        match kind {
+            CapturedFrameKind::Rgb8 => Self::RGB,
+            CapturedFrameKind::Depth32F => Self::DEPTH,
+            CapturedFrameKind::R32Uint => Self::R32_UINT,
+        }
+    }
+
+    const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    fn insert(&mut self, other: Self) {
+        self.0 |= other.0;
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CaptureSubmission {
+    id: CaptureFrameId,
+    required: CaptureChannels,
+    submitted: CaptureChannels,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureSubmissionError {
+    AlreadyActive {
+        active: CaptureFrameId,
+        requested: CaptureFrameId,
+    },
+    NoActiveSubmission,
+    WrongFrame {
+        active: CaptureFrameId,
+        received: CaptureFrameId,
+    },
+    UnexpectedChannel {
+        id: CaptureFrameId,
+        kind: CapturedFrameKind,
+    },
+    DuplicateChannel {
+        id: CaptureFrameId,
+        kind: CapturedFrameKind,
+    },
+    MissingChannels {
+        id: CaptureFrameId,
+        required: CaptureChannels,
+        submitted: CaptureChannels,
+    },
+}
+
+#[derive(Resource, Default)]
+pub struct CaptureFrameSubmission(Mutex<Option<CaptureSubmission>>);
+
+impl CaptureFrameSubmission {
+    pub fn begin(
+        &self,
+        id: CaptureFrameId,
+        required: CaptureChannels,
+    ) -> Result<(), CaptureSubmissionError> {
+        let mut guard = self.0.lock().unwrap();
+        if let Some(active) = *guard {
+            return Err(CaptureSubmissionError::AlreadyActive {
+                active: active.id,
+                requested: id,
+            });
+        }
+        *guard = Some(CaptureSubmission {
+            id,
+            required,
+            submitted: CaptureChannels::default(),
+        });
+        Ok(())
+    }
+
+    pub fn active_id(&self) -> Option<CaptureFrameId> {
+        self.0.lock().unwrap().as_ref().map(|active| active.id)
+    }
+
+    fn claim(
+        &self,
+        id: CaptureFrameId,
+        kind: CapturedFrameKind,
+    ) -> Result<(), CaptureSubmissionError> {
+        let mut guard = self.0.lock().unwrap();
+        let active = guard
+            .as_mut()
+            .ok_or(CaptureSubmissionError::NoActiveSubmission)?;
+        if active.id != id {
+            return Err(CaptureSubmissionError::WrongFrame {
+                active: active.id,
+                received: id,
+            });
+        }
+        let channel = CaptureChannels::for_kind(kind);
+        if !active.required.contains(channel) {
+            return Err(CaptureSubmissionError::UnexpectedChannel { id, kind });
+        }
+        if active.submitted.contains(channel) {
+            return Err(CaptureSubmissionError::DuplicateChannel { id, kind });
+        }
+        active.submitted.insert(channel);
+        Ok(())
+    }
+
+    fn finish(&self, id: CaptureFrameId) -> Result<(), CaptureSubmissionError> {
+        let active = self
+            .0
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or(CaptureSubmissionError::NoActiveSubmission)?;
+        if active.id != id {
+            return Err(CaptureSubmissionError::WrongFrame {
+                active: active.id,
+                received: id,
+            });
+        }
+        if !active.submitted.contains(active.required) {
+            return Err(CaptureSubmissionError::MissingChannels {
+                id,
+                required: active.required,
+                submitted: active.submitted,
+            });
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CapturedFrameKind {
     Rgb8,
     Depth32F,
+    R32Uint,
 }
 
 #[derive(Resource, Clone)]
@@ -37,6 +186,7 @@ pub struct CaptureConfig {
 }
 
 pub struct CapturedFrame<'a> {
+    pub frame_id: Option<CaptureFrameId>,
     pub kind: CapturedFrameKind,
     pub width: u32,
     pub height: u32,
@@ -306,6 +456,10 @@ fn capture_texture_aspect(format: TextureFormat) -> TextureAspect {
 }
 
 pub trait SnapshotSync: Send {
+    fn frame_id(&self) -> Option<CaptureFrameId> {
+        None
+    }
+
     fn captured(
         self: Box<Self>,
         world: &mut DeferredWorld,
@@ -318,7 +472,11 @@ pub trait SnapshotAsync: Send {
 }
 
 pub trait GpuCaptureHandler: Send + Sync + 'static {
-    fn captured(&self, world: &World) -> Option<Box<dyn SnapshotSync>>;
+    fn captured(
+        &self,
+        world: &World,
+        frame_id: Option<CaptureFrameId>,
+    ) -> Option<Box<dyn SnapshotSync>>;
 }
 
 fn image_copy_driver(world: &World, mut render_context: RenderContext) {
@@ -329,10 +487,42 @@ fn image_copy_driver(world: &World, mut render_context: RenderContext) {
         return;
     };
 
+    let submission = world.get_resource::<CaptureFrameSubmission>();
+    let active_frame_id = submission.and_then(CaptureFrameSubmission::active_id);
+
     for copier in copiers.iter() {
         let Some(src_image) = gpu_images.get(&copier.src_image) else {
             continue;
         };
+
+        let snapshots: Vec<DynSnapshotSync> = copier
+            .snapshots
+            .iter()
+            .filter_map(|handler| handler.captured(world, active_frame_id))
+            .collect();
+        if let Some(id) = active_frame_id {
+            for snapshot in &snapshots {
+                if let Some(snapshot_id) = snapshot.frame_id()
+                    && snapshot_id != id
+                {
+                    panic!(
+                        "capture snapshot frame mismatch: active={id:?}, snapshot={snapshot_id:?}"
+                    );
+                }
+            }
+            if snapshots
+                .iter()
+                .any(|snapshot| snapshot.frame_id() == Some(id))
+            {
+                submission
+                    .unwrap()
+                    .claim(id, copier.config.frame_kind)
+                    .unwrap_or_else(|error| panic!("capture channel submission failed: {error:?}"));
+            }
+        }
+        if snapshots.is_empty() {
+            continue;
+        }
 
         let size = src_image.texture_descriptor.size;
         let format = src_image.texture_descriptor.format;
@@ -343,12 +533,6 @@ fn image_copy_driver(world: &World, mut render_context: RenderContext) {
         );
         let buffer_size = padded_bytes_per_row as u64 * size.height as u64;
         let buffer = copier.acquire_buffer(render_context.render_device(), buffer_size);
-
-        let snapshot: Vec<DynSnapshotSync> = copier
-            .snapshots
-            .iter()
-            .filter_map(|handler| handler.captured(world))
-            .collect();
 
         render_context.command_encoder().copy_texture_to_buffer(
             TexelCopyTextureInfo {
@@ -373,12 +557,14 @@ fn image_copy_driver(world: &World, mut render_context: RenderContext) {
         );
 
         let mut queue = copier.queue.lock().unwrap();
-        queue.push_back((buffer, snapshot, size.width, size.height, format));
-        while queue.len() > MAX_IN_FLIGHT_FRAMES {
-            if let Some((buffer, _, _, _, _)) = queue.pop_front() {
-                copier.free_buffers.lock().unwrap().push(buffer);
-            }
-        }
+        queue.push_back((buffer, snapshots, size.width, size.height, format));
+    }
+
+    if let Some(id) = active_frame_id {
+        submission
+            .unwrap()
+            .finish(id)
+            .unwrap_or_else(|error| panic!("incomplete capture frame submission: {error:?}"));
     }
 }
 
@@ -429,9 +615,12 @@ fn receive_image_from_buffer(mut world: DeferredWorld) {
             s.send(dat).expect("Failed to send map update");
         });
 
-        let snapshots: Vec<Box<dyn SnapshotAsync>> = snapshots
+        let snapshots: Vec<(Option<CaptureFrameId>, Box<dyn SnapshotAsync>)> = snapshots
             .into_iter()
-            .map(|v| v.captured(&mut world, &config))
+            .map(|snapshot| {
+                let frame_id = snapshot.frame_id();
+                (frame_id, snapshot.captured(&mut world, &config))
+            })
             .collect();
         let frame_kind = config.frame_kind;
 
@@ -469,10 +658,19 @@ fn receive_image_from_buffer(mut world: DeferredWorld) {
                         let aligned_row_bytes = RenderDevice::align_copy_bytes_per_row(row_bytes);
                         unpad_rows(&padded, row_bytes, aligned_row_bytes, height)
                     }
+                    CapturedFrameKind::R32Uint => {
+                        let pixel_size = texture_format
+                            .pixel_size()
+                            .expect("Unsupported visibility-mask texture format");
+                        let row_bytes = width as usize * pixel_size;
+                        let aligned_row_bytes = RenderDevice::align_copy_bytes_per_row(row_bytes);
+                        unpad_rows(&padded, row_bytes, aligned_row_bytes, height)
+                    }
                 };
 
-                for mut snapshot in snapshots {
+                for (frame_id, mut snapshot) in snapshots {
                     snapshot.captured(CapturedFrame {
+                        frame_id,
                         kind: frame_kind,
                         width,
                         height,
@@ -545,6 +743,9 @@ impl Plugin for CameraCapturePlugin {
         render_app.world_mut().init_resource::<ImageCopiers>();
         render_app
             .world_mut()
+            .init_resource::<CaptureFrameSubmission>();
+        render_app
+            .world_mut()
             .init_resource::<ImageCopyDriverInstalled>();
 
         {
@@ -578,5 +779,58 @@ impl Plugin for CameraCapturePlugin {
         if self.expose_config_resource {
             render_app.insert_resource(self.config.clone());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_submission_accepts_all_channels_in_any_order() {
+        let submission = CaptureFrameSubmission::default();
+        let id = CaptureFrameId::new(7);
+
+        submission.begin(id, CaptureChannels::ALL).unwrap();
+        submission.claim(id, CapturedFrameKind::Depth32F).unwrap();
+        submission.claim(id, CapturedFrameKind::R32Uint).unwrap();
+        submission.claim(id, CapturedFrameKind::Rgb8).unwrap();
+
+        assert_eq!(submission.finish(id), Ok(()));
+        assert_eq!(submission.active_id(), None);
+    }
+
+    #[test]
+    fn capture_submission_rejects_missing_and_duplicate_channels() {
+        let submission = CaptureFrameSubmission::default();
+        let id = CaptureFrameId::new(11);
+
+        submission.begin(id, CaptureChannels::ALL).unwrap();
+        submission.claim(id, CapturedFrameKind::Rgb8).unwrap();
+        assert!(matches!(
+            submission.claim(id, CapturedFrameKind::Rgb8),
+            Err(CaptureSubmissionError::DuplicateChannel { .. })
+        ));
+        assert!(matches!(
+            submission.finish(id),
+            Err(CaptureSubmissionError::MissingChannels { .. })
+        ));
+    }
+
+    #[test]
+    fn capture_submission_rejects_cross_frame_claims() {
+        let submission = CaptureFrameSubmission::default();
+        let active = CaptureFrameId::new(21);
+        let wrong = CaptureFrameId::new(22);
+
+        submission.begin(active, CaptureChannels::ALL).unwrap();
+
+        assert!(matches!(
+            submission.claim(wrong, CapturedFrameKind::Rgb8),
+            Err(CaptureSubmissionError::WrongFrame {
+                active: CaptureFrameId(21),
+                received: CaptureFrameId(22),
+            })
+        ));
     }
 }

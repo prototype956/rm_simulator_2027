@@ -8,6 +8,7 @@ pub struct ShmPublisher {
     meta_region: ShmRegion,
     image_pool: ShmRegion,
     current_buffer_id: u8,
+    last_synchronized_frame_seq: Option<u64>,
 }
 
 impl ShmPublisher {
@@ -42,10 +43,23 @@ impl ShmPublisher {
             meta_region,
             image_pool,
             current_buffer_id: 0,
+            last_synchronized_frame_seq: None,
         })
     }
 
     pub fn publish_image(&mut self, data: &[u8], seq: u64, timestamp_ns: u64) {
+        self.publish_image_with(data, seq, timestamp_ns, |_| {});
+    }
+
+    pub fn publish_image_with<F>(
+        &mut self,
+        data: &[u8],
+        seq: u64,
+        timestamp_ns: u64,
+        before_commit: F,
+    ) where
+        F: FnOnce(&mut Self),
+    {
         assert_eq!(data.len(), IMAGE_SIZE, "Image size mismatch");
 
         let buffer_id = self.current_buffer_id;
@@ -56,6 +70,10 @@ impl ShmPublisher {
             let dst = pool_ptr.add(buffer_id as usize * IMAGE_SIZE);
             std::ptr::copy_nonoverlapping(data.as_ptr(), dst, IMAGE_SIZE);
         }
+
+        // Publish data associated with this image only after the expensive pixel copy. The image
+        // metadata below is the commit marker observed by consumers.
+        before_commit(self);
 
         unsafe {
             let meta = self.meta_region.as_mut::<ShmMetaRegion>();
@@ -73,6 +91,45 @@ impl ShmPublisher {
             slot.buffer_id = buffer_id;
             slot.format = 0;
             producer.publish();
+        }
+    }
+
+    #[must_use]
+    pub fn try_publish_synchronized_image<F>(
+        &mut self,
+        data: &[u8],
+        seq: u64,
+        timestamp_ns: u64,
+        before_commit: F,
+    ) -> bool
+    where
+        F: FnOnce(&mut Self),
+    {
+        // Never publish an older async readback, and never overwrite one half of an image/pose
+        // bundle while the consumer is between the two triple buffers.
+        if self
+            .last_synchronized_frame_seq
+            .is_some_and(|last_seq| seq <= last_seq)
+            || !self.synchronized_frame_consumed()
+        {
+            return false;
+        }
+
+        self.publish_image_with(data, seq, timestamp_ns, before_commit);
+        self.last_synchronized_frame_seq = Some(seq);
+        true
+    }
+
+    fn synchronized_frame_consumed(&self) -> bool {
+        unsafe {
+            let meta = self.meta_region.as_ref::<ShmMetaRegion>();
+            let image_consumed = meta.image.state.load(Ordering::Acquire) & FLAG_NEW == 0;
+            // Gimbal, odom, muzzle and camera are consumed with each image. Slot 4 is the legacy
+            // chassis-observation channel and is intentionally not part of this handshake.
+            let poses_consumed = meta.poses[..=PoseIndex::Camera as usize]
+                .iter()
+                .all(|pose| pose.state.load(Ordering::Acquire) & FLAG_NEW == 0);
+            image_consumed && poses_consumed
         }
     }
 

@@ -1,13 +1,12 @@
 use crate::capture::{
     CameraFov, CaptureBundle, CaptureSource, ImageHandle, compute_camera_intrinsics,
     driver::{
-        CaptureConfig, CapturedFrame, CapturedFrameKind, GpuCaptureHandler, SnapshotAsync,
-        SnapshotSync,
+        CaptureConfig, CaptureFrameId, CapturedFrame, CapturedFrameKind, GpuCaptureHandler,
+        SnapshotAsync, SnapshotSync,
     },
     setup_capture_camera, setup_preview_window, sync_capture_camera,
 };
 use crate::components::{Controlled, InfantryGimbal, InfantryLaunchOffset, SubscribeAutoAim};
-use crate::dataset::prelude::DatasetSnapshotCreator;
 use crate::systems::{ChassisObservationFrame, GameplaySystems};
 use crate::talos::plugin::{to_ros_quat, to_ros_translation};
 use bevy::ecs::world::DeferredWorld;
@@ -37,6 +36,7 @@ pub fn advance_talos_frame_stamp(mut stamp: ResMut<TalosFrameStamp>) {
 pub struct ExtractedPoseData {
     pub frame_seq: u64,
     pub timestamp_ns: u64,
+    pose: Option<CapturedPoseData>,
     pub valid: bool,
 }
 
@@ -60,6 +60,7 @@ fn now_ns() -> u64 {
 struct TalosSnapshotSync {
     frame_seq: u64,
     timestamp_ns: u64,
+    pose: CapturedPoseData,
 }
 
 impl SnapshotSync for TalosSnapshotSync {
@@ -74,6 +75,7 @@ impl SnapshotSync for TalosSnapshotSync {
             ctx,
             frame_seq: self.frame_seq,
             timestamp_ns: self.timestamp_ns,
+            pose: self.pose,
         })
     }
 }
@@ -82,6 +84,7 @@ struct TalosSnapshot {
     ctx: Arc<Mutex<ShmPublisher>>,
     frame_seq: u64,
     timestamp_ns: u64,
+    pose: CapturedPoseData,
 }
 
 impl SnapshotAsync for TalosSnapshot {
@@ -109,7 +112,14 @@ impl SnapshotAsync for TalosSnapshot {
         }
 
         if let Ok(mut publisher) = self.ctx.lock() {
-            publisher.publish_image(frame.data, self.frame_seq, self.timestamp_ns);
+            let _ = publisher.try_publish_synchronized_image(
+                frame.data,
+                self.frame_seq,
+                self.timestamp_ns,
+                |publisher| {
+                    publish_pose_data(publisher, self.frame_seq, self.timestamp_ns, &self.pose);
+                },
+            );
         }
     }
 }
@@ -118,16 +128,22 @@ impl SnapshotAsync for TalosSnapshot {
 struct TalosSnapshotCreator {}
 
 impl GpuCaptureHandler for TalosSnapshotCreator {
-    fn captured(&self, world: &World) -> Option<Box<dyn SnapshotSync>> {
+    fn captured(
+        &self,
+        world: &World,
+        _frame_id: Option<CaptureFrameId>,
+    ) -> Option<Box<dyn SnapshotSync>> {
         // Timestamp, frame sequence and pose must come from the same ExtractSchedule snapshot.
         let extracted = world.get_resource::<ExtractedPoseData>()?;
         if !extracted.valid {
             return None;
         }
+        let pose = extracted.pose.clone()?;
 
         Some(Box::new(TalosSnapshotSync {
             frame_seq: extracted.frame_seq,
             timestamp_ns: extracted.timestamp_ns,
+            pose,
         }))
     }
 }
@@ -146,48 +162,16 @@ pub struct TalosCapturePlugin {
     pub context: TalosCaptureContext,
 }
 
-pub fn publish_talos_pose_system(
+pub fn publish_talos_runtime_state_system(
     context: Option<Res<TalosCaptureContext>>,
     frame_stamp: Res<TalosFrameStamp>,
-    camera: Query<&GlobalTransform, With<CaptureSource>>,
-    gimbal: Query<&GlobalTransform, (With<Controlled>, With<InfantryGimbal>)>,
-    muzzle_offset: Query<
-        (&GlobalTransform, &Transform),
-        (With<InfantryLaunchOffset>, With<Controlled>),
-    >,
-    chassis_obs: Res<ChassisObservationFrame>,
     following: Res<SubscribeAutoAim>,
 ) {
     let Some(ctx) = context else {
         return;
     };
-    let Ok(cam_transform) = camera.single() else {
-        return;
-    };
-    let Ok(gimbal_transform) = gimbal.single() else {
-        return;
-    };
-    let Ok((muzzle_global, muzzle_local)) = muzzle_offset.single() else {
-        return;
-    };
-
-    let pose = captured_pose_data(
-        cam_transform,
-        gimbal_transform,
-        muzzle_global,
-        muzzle_local,
-        &chassis_obs,
-        frame_stamp.frame_seq,
-        frame_stamp.timestamp_ns,
-    );
 
     if let Ok(mut publisher) = ctx.publisher.lock() {
-        publish_pose_data(
-            &mut publisher,
-            frame_stamp.frame_seq,
-            frame_stamp.timestamp_ns,
-            &pose,
-        );
         publisher.publish_runtime_state(RuntimeState {
             timestamp_ns: frame_stamp.timestamp_ns,
             following: u8::from(following.load(Ordering::Acquire)),
@@ -198,14 +182,10 @@ pub fn publish_talos_pose_system(
 
 impl Plugin for TalosCapturePlugin {
     fn build(&self, app: &mut App) {
-        let capture = CaptureBundle::color_and_depth(
+        let capture = CaptureBundle::color(
             app,
             self.config.clone(),
-            vec![
-                Box::new(TalosSnapshotCreator::default()),
-                Box::new(DatasetSnapshotCreator::default()),
-            ],
-            vec![Box::new(DatasetSnapshotCreator::depth())],
+            vec![Box::new(TalosSnapshotCreator::default())],
         );
         let render_target_handle = capture.color_target().unwrap().clone();
 
@@ -266,19 +246,22 @@ fn extract_pose_data(
     pose_data.timestamp_ns = frame_stamp.timestamp_ns;
 
     let Ok(cam_transform) = camera.single() else {
+        pose_data.pose = None;
         pose_data.valid = false;
         return;
     };
     let Ok(gimbal_transform) = gimbal.single() else {
+        pose_data.pose = None;
         pose_data.valid = false;
         return;
     };
     let Ok((muzzle_global, muzzle_local)) = muzzle_offset.single() else {
+        pose_data.pose = None;
         pose_data.valid = false;
         return;
     };
 
-    let _pose = captured_pose_data(
+    pose_data.pose = Some(captured_pose_data(
         cam_transform,
         gimbal_transform,
         muzzle_global,
@@ -286,7 +269,7 @@ fn extract_pose_data(
         &chassis_obs,
         pose_data.frame_seq,
         pose_data.timestamp_ns,
-    );
+    ));
     pose_data.valid = true;
 }
 

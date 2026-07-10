@@ -7,7 +7,7 @@ use avian3d::prelude::{
 use bevy::app::App;
 use bevy::ecs::system::SystemParam;
 use bevy::ecs::system::lifetimeless::Read;
-use bevy::mesh::VertexAttributeValues;
+use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::{
     Added, Assets, Changed, ChildOf, Children, Commands, Component, Entity, Mesh, Mesh3d, Name,
     Plugin, Query, Res, Update, Vec3, Visibility, With, info,
@@ -35,6 +35,8 @@ pub struct VertexData {
 #[derive(Component, Clone, Debug)]
 pub struct LightStrip {
     pub side: Side,
+    pub visibility_id: u32,
+    pub mask_triangles: Vec<Vec3>,
 }
 
 #[derive(Component, Clone, Debug)]
@@ -105,6 +107,13 @@ pub struct ArmorRoot {
     pub id: ArmorId,
 }
 
+impl ArmorRoot {
+    pub fn light_visibility_id(&self, side: Side) -> u32 {
+        u32::try_from(self.id.as_usize() * 2 + side.index() + 1)
+            .expect("Armor light visibility ID exceeds u32")
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct ArmorId(usize);
 
@@ -117,7 +126,7 @@ impl ArmorId {
 #[derive(Component, Clone)]
 pub struct ArmorParts {
     marker: Entity,
-    lights: [Entity; 2],
+    lights: [Vec<Entity>; 2],
     vertices: [Entity; 2],
 }
 
@@ -132,8 +141,13 @@ macro_rules! impl_side {
 }
 
 impl ArmorParts {
-    impl_side!(light, lights);
     impl_side!(vertex, vertices);
+
+    #[inline]
+    #[must_use]
+    pub fn lights(&self, side: Side) -> &[Entity] {
+        self.lights[side.index()].as_slice()
+    }
 
     #[inline]
     #[must_use]
@@ -233,27 +247,45 @@ impl ArmorConstructor<'_, '_> {
                 });
         }
         //let _base = query!(root_query, .."BASE")?;
-        let lights = [
+        let light_roots = [
             [query!(root_query, .."L_L")?, query!(root_query, .."L_R")?],
             [
                 query!(root_query, .."L_L_RED")?,
                 query!(root_query, .."L_R_RED")?,
             ],
         ];
-        let (lights, hide) = match armor_data.team {
-            Team::Red => (lights[1], lights[0]),
-            Team::Blue => (lights[0], lights[1]),
+        let (light_roots, hide) = match armor_data.team {
+            Team::Red => (light_roots[1], light_roots[0]),
+            Team::Blue => (light_roots[0], light_roots[1]),
         };
         for hide in hide {
             self.commands.entity(hide).despawn();
         }
 
-        self.commands
-            .entity(lights[0])
-            .insert(LightStrip { side: Side::Left });
-        self.commands
-            .entity(lights[1])
-            .insert(LightStrip { side: Side::Right });
+        static ID: AtomicUsize = AtomicUsize::new(0);
+        let ar = ArmorRoot {
+            id: ArmorId(ID.fetch_add(1, Ordering::SeqCst)),
+        };
+
+        let lights = light_roots.map(|light_root| {
+            self.children
+                .iter_descendants(light_root)
+                .filter(|entity| self.mesh_query.contains(*entity))
+                .collect::<Vec<_>>()
+        });
+        if lights.iter().any(Vec::is_empty) {
+            return None;
+        }
+        for (light_meshes, side) in [(&lights[0], Side::Left), (&lights[1], Side::Right)] {
+            for &light in light_meshes {
+                let mask_triangles = self.get_mesh(light).and_then(extract_triangle_vertices)?;
+                self.commands.entity(light).insert(LightStrip {
+                    side,
+                    visibility_id: ar.light_visibility_id(side),
+                    mask_triangles,
+                });
+            }
+        }
 
         let marker = query!(root_query, .."MARKER", ...)?;
         self.process_marker(marker, &armor_name, armor_data)?;
@@ -302,11 +334,6 @@ impl ArmorConstructor<'_, '_> {
             label: armor_data.spec.label(),
         });
 
-        static ID: AtomicUsize = AtomicUsize::new(0);
-
-        let ar = ArmorRoot {
-            id: ArmorId(ID.fetch_add(1, Ordering::SeqCst)),
-        };
         let parts = ArmorParts {
             marker,
             lights,
@@ -332,6 +359,43 @@ pub fn extract_vertices(mesh: &Mesh) -> Option<Vec<Vec3>> {
             }
         })
         .filter(|points: &Vec<Vec3>| !points.is_empty())
+}
+
+fn extract_triangle_vertices(mesh: &Mesh) -> Option<Vec<Vec3>> {
+    if mesh.primitive_topology() != PrimitiveTopology::TriangleList {
+        return None;
+    }
+    let positions = extract_vertices(mesh)?;
+    let mut triangles = Vec::new();
+    let mut append = |index: usize| {
+        if let Some(position) = positions.get(index) {
+            triangles.push(*position);
+        }
+    };
+
+    match mesh.indices() {
+        Some(Indices::U16(indices)) => {
+            for &index in indices {
+                append(index as usize);
+            }
+        }
+        Some(Indices::U32(indices)) => {
+            for &index in indices {
+                append(index as usize);
+            }
+        }
+        None => {
+            for index in 0..positions.len() {
+                append(index);
+            }
+        }
+    }
+
+    let trailing = triangles.len() % 3;
+    if trailing != 0 {
+        triangles.truncate(triangles.len() - trailing);
+    }
+    (!triangles.is_empty()).then_some(triangles)
 }
 
 fn insert(

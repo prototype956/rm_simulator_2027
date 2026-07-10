@@ -4,7 +4,8 @@ use crate::capture::depth::{
     DepthCameraSettings, setup_depth_capture_camera, sync_depth_capture_camera,
 };
 use crate::capture::driver::{
-    CaptureConfig, CapturedFrame, CapturedFrameKind, GpuCaptureHandler, SnapshotAsync, SnapshotSync,
+    CaptureConfig, CaptureFrameId, CapturedFrame, CapturedFrameKind, GpuCaptureHandler,
+    SnapshotAsync, SnapshotSync,
 };
 use crate::ros2::topic::{LivoxPointCloudTopic, TopicPublisher};
 use crate::systems::GameplaySystems;
@@ -198,7 +199,11 @@ impl SnapshotAsync for RosLivoxSnapshot {
 struct RosLivoxSnapshotCreator;
 
 impl GpuCaptureHandler for RosLivoxSnapshotCreator {
-    fn captured(&self, world: &World) -> Option<Box<dyn SnapshotSync>> {
+    fn captured(
+        &self,
+        world: &World,
+        _frame_id: Option<CaptureFrameId>,
+    ) -> Option<Box<dyn SnapshotSync>> {
         let ctx = world.resource::<RosLivoxContextShared>().0.clone();
         let now = ctx.clock.lock().ok()?.get_now().ok()?;
         let stamp = Clock::to_builtin_time(&now);

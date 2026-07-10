@@ -3,12 +3,11 @@
 use crate::capture::{
     CameraFov, CaptureBundle, ImageHandle, compute_camera_intrinsics,
     driver::{
-        CaptureConfig, CapturedFrame, CapturedFrameKind, GpuCaptureHandler, SnapshotAsync,
-        SnapshotSync,
+        CaptureConfig, CaptureFrameId, CapturedFrame, CapturedFrameKind, GpuCaptureHandler,
+        SnapshotAsync, SnapshotSync,
     },
     setup_capture_camera, setup_preview_window, sync_capture_camera,
 };
-use crate::dataset::prelude::DatasetSnapshotCreator;
 use crate::ros2::image::compress_image;
 use crate::ros2::topic::{CameraInfoTopic, ImageCompressedTopic, ImageRawTopic, TopicPublisher};
 use crate::systems::GameplaySystems;
@@ -81,7 +80,11 @@ impl SnapshotAsync for RosSnapshot {
 struct RosSnapshotCreator {}
 
 impl GpuCaptureHandler for RosSnapshotCreator {
-    fn captured(&self, world: &World) -> Option<Box<dyn SnapshotSync>> {
+    fn captured(
+        &self,
+        world: &World,
+        _frame_id: Option<CaptureFrameId>,
+    ) -> Option<Box<dyn SnapshotSync>> {
         let clock = world.resource::<RosCaptureContext>();
         Some(Box::new(RosSnapshotSync {
             stamp: RefCell::new(Clock::to_builtin_time(
@@ -111,14 +114,10 @@ pub struct RosCapturePlugin {
 
 impl Plugin for RosCapturePlugin {
     fn build(&self, app: &mut App) {
-        let capture = CaptureBundle::color_and_depth(
+        let capture = CaptureBundle::color(
             app,
             self.config.clone(),
-            vec![
-                Box::new(RosSnapshotCreator::default()),
-                Box::new(DatasetSnapshotCreator::default()),
-            ],
-            vec![Box::new(DatasetSnapshotCreator::depth())],
+            vec![Box::new(RosSnapshotCreator::default())],
         );
         let render_target_handle = capture.color_target().unwrap().clone();
 
