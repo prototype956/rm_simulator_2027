@@ -26,7 +26,6 @@ use bevy::winit::WinitSettings;
 use bevy_inspector_egui::bevy_egui::EguiPlugin;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use std::sync::atomic::AtomicBool;
-use std::time::{Duration, Instant};
 
 use crate::components::{CameraMode, FollowingType, ProjectileCooldown, SubscribeAutoAim};
 use crate::config::{ConfigPlugin, SimulationConfig};
@@ -90,26 +89,6 @@ fn fixed_time_from_config(config: &SimulationConfig) -> Time<Fixed> {
     Time::<Fixed>::from_hz(config.physics.fixed_hz.max(1.0))
 }
 
-#[derive(Resource)]
-struct FrameLimiter {
-    interval: Duration,
-    next_frame: Instant,
-}
-
-fn limit_frame_rate(mut limiter: ResMut<FrameLimiter>) {
-    let now = Instant::now();
-    if now < limiter.next_frame {
-        std::thread::sleep(limiter.next_frame - now);
-    }
-
-    let after_wait = Instant::now();
-    limiter.next_frame = if after_wait > limiter.next_frame + limiter.interval {
-        after_wait + limiter.interval
-    } else {
-        limiter.next_frame + limiter.interval
-    };
-}
-
 #[cfg(feature = "talos")]
 fn should_enable_talos_plugin(app: &App) -> bool {
     #[cfg(feature = "ros2")]
@@ -150,13 +129,6 @@ fn main() {
         PhysicsPlugins::default(),
     ));
     app.insert_resource(WinitSettings::continuous());
-    if config.window.max_fps > 0.0 {
-        app.insert_resource(FrameLimiter {
-            interval: Duration::from_secs_f64(1.0 / config.window.max_fps.max(1.0)),
-            next_frame: Instant::now(),
-        })
-        .add_systems(First, limit_frame_rate);
-    }
 
     if config.debug.egui {
         app.add_plugins(EguiPlugin::default());

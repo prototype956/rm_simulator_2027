@@ -1,4 +1,5 @@
 use crate::capture::driver::{CaptureConfig, CapturedFrameKind};
+use crate::capture::{IMAGE_HEIGHT, IMAGE_WIDTH};
 use crate::components::{
     Controlled, InfantryChassis, InfantryGimbal, InfantryLaunchOffset, SubscribeAutoAim,
 };
@@ -9,6 +10,7 @@ use crate::talos::capture::{
     publish_talos_runtime_state_system,
 };
 use bevy::ecs::system::RunSystemOnce;
+use bevy::image::BevyDefault;
 use bevy::prelude::*;
 use bevy::render::render_resource::TextureFormat;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,8 +34,8 @@ impl Default for TalosPluginConfig {
     fn default() -> Self {
         let config = SimulationConfig::default();
         Self {
-            width: config.capture.color.width,
-            height: config.capture.color.height,
+            width: IMAGE_WIDTH,
+            height: IMAGE_HEIGHT,
             fov_y: config.camera.fov.to_radians(),
             texture_format: TextureFormat::Rgba8UnormSrgb,
         }
@@ -47,11 +49,7 @@ pub struct TalosPlugin {
 
 impl Plugin for TalosPlugin {
     fn build(&self, app: &mut App) {
-        let publisher = match ShmPublisher::create_with_image(
-            self.config.width,
-            self.config.height,
-            talos_ipc::ImageFormat::Bgr8,
-        ) {
+        let publisher = match ShmPublisher::create() {
             Ok(p) => {
                 info!("talos shm created");
                 p
@@ -68,7 +66,7 @@ impl Plugin for TalosPlugin {
             width: self.config.width,
             height: self.config.height,
             texture_format: self.config.texture_format,
-            frame_kind: CapturedFrameKind::Bgr8,
+            frame_kind: CapturedFrameKind::Rgb8,
         };
 
         let capture_context = TalosCaptureContext {

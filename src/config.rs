@@ -29,18 +29,15 @@ pub struct SimulationConfig {
 }
 
 #[derive(Deserialize, Reflect, Clone)]
-#[serde(default)]
 pub struct WindowConfig {
     pub present_mode: String,
-    pub max_fps: f64,
 }
 
 impl Default for WindowConfig {
     fn default() -> Self {
         Self {
-            // Present without VSync; window.max_fps independently controls application pacing.
+            // Uncap rendering by default so off-screen capture (Talos/ROS2) can exceed 60Hz.
             present_mode: "auto_no_vsync".to_string(),
-            max_fps: 0.0,
         }
     }
 }

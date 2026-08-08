@@ -44,7 +44,7 @@ impl CaptureChannels {
 
     const fn for_kind(kind: CapturedFrameKind) -> Self {
         match kind {
-            CapturedFrameKind::Rgb8 | CapturedFrameKind::Bgr8 => Self::RGB,
+            CapturedFrameKind::Rgb8 => Self::RGB,
             CapturedFrameKind::Depth32F => Self::DEPTH,
             CapturedFrameKind::R32Uint => Self::R32_UINT,
         }
@@ -173,7 +173,6 @@ impl CaptureFrameSubmission {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CapturedFrameKind {
     Rgb8,
-    Bgr8,
     Depth32F,
     R32Uint,
 }
@@ -403,12 +402,11 @@ fn unpad_rows(padded: &[u8], row_bytes: usize, aligned_row_bytes: usize, height:
     out
 }
 
-fn padded_rgba_to_color(
+fn padded_rgba_to_rgb(
     padded: &[u8],
     width: u32,
     height: u32,
     format: TextureFormat,
-    bgr: bool,
 ) -> Option<Vec<u8>> {
     let pixel_size = format.pixel_size().ok()?;
     if pixel_size != 4 {
@@ -423,9 +421,7 @@ fn padded_rgba_to_color(
             for row in padded.chunks(aligned_row_bytes).take(height as usize) {
                 let row = &row[..row_bytes.min(row.len())];
                 for px in row.chunks_exact(4) {
-                    let rgb = [px[2], px[1], px[0]];
-                    let color = if bgr { [rgb[2], rgb[1], rgb[0]] } else { rgb };
-                    out.extend_from_slice(&color);
+                    out.extend_from_slice(&[px[2], px[1], px[0]]);
                 }
             }
             Some(out)
@@ -435,9 +431,7 @@ fn padded_rgba_to_color(
             for row in padded.chunks(aligned_row_bytes).take(height as usize) {
                 let row = &row[..row_bytes.min(row.len())];
                 for px in row.chunks_exact(4) {
-                    let rgb = [px[0], px[1], px[2]];
-                    let color = if bgr { [rgb[2], rgb[1], rgb[0]] } else { rgb };
-                    out.extend_from_slice(&color);
+                    out.extend_from_slice(&[px[0], px[1], px[2]]);
                 }
             }
             Some(out)
@@ -634,10 +628,9 @@ fn receive_image_from_buffer(mut world: DeferredWorld) {
             .spawn(async move {
                 let padded = r.await.expect("Failed to receive the map_async message");
                 let frame_bytes = match frame_kind {
-                    CapturedFrameKind::Rgb8 | CapturedFrameKind::Bgr8 => {
-                        let bgr = frame_kind == CapturedFrameKind::Bgr8;
-                        padded_rgba_to_color(&padded, width, height, texture_format, bgr)
-                            .unwrap_or_else(|| {
+                    CapturedFrameKind::Rgb8 => {
+                        padded_rgba_to_rgb(&padded, width, height, texture_format).unwrap_or_else(
+                            || {
                                 let pixel_size = texture_format
                                     .pixel_size()
                                     .expect("Unsupported capture texture format");
@@ -653,15 +646,9 @@ fn receive_image_from_buffer(mut world: DeferredWorld) {
                                     Some(texture_format),
                                 );
                                 bevy_image.data = Some(unpadded);
-                                let rgb = bevy_image.try_into_dynamic().unwrap().to_rgb8();
-                                if bgr {
-                                    rgb.pixels()
-                                        .flat_map(|pixel| [pixel[2], pixel[1], pixel[0]])
-                                        .collect()
-                                } else {
-                                    rgb.into_raw()
-                                }
-                            })
+                                bevy_image.try_into_dynamic().unwrap().to_rgb8().into_raw()
+                            },
+                        )
                     }
                     CapturedFrameKind::Depth32F => {
                         let pixel_size = texture_format

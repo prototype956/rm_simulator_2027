@@ -102,9 +102,6 @@
 
 ### Talos 共享内存接口
 
-当前协议版本为 v3。图像池大小跟随 `config.toml` 的 `capture.color` 动态创建，
-Daedalus 默认发布 BGR8；元数据、同步位姿和云台命令仍使用三缓冲握手。
-
 **发布姿势**（零拷贝共享内存）
 
 * `odom` - 底盘里程计姿势
@@ -115,19 +112,6 @@ Daedalus 默认发布 BGR8；元数据、同步位姿和云台命令仍使用三
 **订阅命令**
 
 * `gimbal_cmd` - 云台控制命令（含开火建议）
-
-### 单 NUC 调试
-
-仓库默认配置已面向单 NUC 调整为 1280×720、30 FPS，并关闭预览、阴影、
-Livox 与诊断输出。构建和启动：
-
-```bash
-cargo build --release --no-default-features --features talos
-taskset -c 8-15 nice -n 5 ./target/release/daedalus
-```
-
-`window.max_fps` 在启动时生效；需要交互预览时可临时将 `preview.enabled` 改为
-`true`。视觉进程建议绑定到 P 核 `0-7`。
 
 ---
 
