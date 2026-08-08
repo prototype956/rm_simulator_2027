@@ -1,26 +1,28 @@
 # Bevy RoboMaster Simulator Configuration
 
 [window]
-# Rendering present mode. Use `auto_no_vsync` to exceed 60Hz for Talos/ROS2 capture.
+# Rendering present mode. Frame rate is independently limited by max_fps below.
 # Options: auto_vsync, auto_no_vsync, fifo, fifo_relaxed, mailbox, immediate
 present_mode = "auto_no_vsync"
+# Cap the app/capture update rate on the single-NUC debug profile.
+max_fps = 30.0
 
 [debug]
 # Turn these on only when needed; they noticeably reduce FPS.
 egui = false
 inspector = false
 # Prints FPS/frametime diagnostics to console.
-diagnostics = true
+diagnostics = false
 
 [preview]
-# On-screen preview camera. Disable to avoid rendering the scene twice (preview + capture).
-enabled = true
+# On-screen blit of the capture texture. Disable to reduce window-compositing overhead.
+enabled = false
 
 [render]
 # Expensive on large scenes; disable for higher FPS.
-shadows = true
+shadows = false
 # Main on-screen camera anti-aliasing.
-main_camera_fxaa = true
+main_camera_fxaa = false
 # Enables Apple's MetalFX temporal scaler for color 3D cameras on macOS.
 metalfx_temporal = true
 # Enables MetalFX frame interpolation after temporal upscaling when supported.
@@ -29,9 +31,9 @@ metalfx_frame_generation = true
 metalfx_scale = 2.0
 illuminance = 500.0
 [capture.color]
-# RGB capture resolution for existing camera pipeline.
-width = 1440
-height = 1080
+# Color capture resolution used by Talos and ROS2.
+width = 1280
+height = 720
 
 [capture.depth]
 # Depth capture resolution for livox-compatible point cloud output.
@@ -41,7 +43,7 @@ near = 0.1
 far = 80.0
 
 [livox_ros]
-enabled = true
+enabled = false
 frame_id = "camera_link"
 publish_freq = 10.0
 points_per_second = 400000
@@ -50,8 +52,8 @@ tag_default = 0
 intensity_default = 1000.0
 
 [physics]
-fixed_hz = 120.0                # fixed physics ticks per second
-substep_count = 8               # physics substeps per fixed tick
+fixed_hz = 60.0                 # fixed physics ticks per second
+substep_count = 2               # physics substeps per fixed tick
 
 [vehicle]
 rotation_speed = 7.42            # rad/s - chassis rotation speed

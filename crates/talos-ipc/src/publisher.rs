@@ -9,12 +9,31 @@ pub struct ShmPublisher {
     image_pool: ShmRegion,
     current_buffer_id: u8,
     last_synchronized_frame_seq: Option<u64>,
+    image_width: u32,
+    image_height: u32,
+    image_format: ImageFormat,
+    image_size: usize,
 }
 
 impl ShmPublisher {
     pub fn create() -> Result<Self, ShmError> {
+        Self::create_with_image(IMAGE_WIDTH, IMAGE_HEIGHT, ImageFormat::Rgb8)
+    }
+
+    pub fn create_with_image(
+        image_width: u32,
+        image_height: u32,
+        image_format: ImageFormat,
+    ) -> Result<Self, ShmError> {
+        if image_width == 0 || image_height == 0 {
+            return Err(ShmError::InvalidSize);
+        }
+        let image_size =
+            image_size(image_width, image_height, image_format).ok_or(ShmError::InvalidSize)?;
+        let pool_size = image_pool_size(image_width, image_height, image_format)
+            .ok_or(ShmError::InvalidSize)?;
         let mut meta_region = ShmRegion::create(SHM_NAME_META, size_of::<ShmMetaRegion>())?;
-        let image_pool = ShmRegion::create(SHM_NAME_IMAGE_POOL, IMAGE_POOL_SIZE)?;
+        let image_pool = ShmRegion::create(SHM_NAME_IMAGE_POOL, pool_size)?;
 
         unsafe {
             let meta = meta_region.as_mut::<ShmMetaRegion>();
@@ -25,8 +44,8 @@ impl ShmPublisher {
                 version: SHM_VERSION,
                 created_ns: Self::now_ns(),
                 heartbeat_ns: Self::now_ns(),
-                image_width: IMAGE_WIDTH,
-                image_height: IMAGE_HEIGHT,
+                image_width,
+                image_height,
                 _pad: [0; 32],
             };
 
@@ -44,6 +63,10 @@ impl ShmPublisher {
             image_pool,
             current_buffer_id: 0,
             last_synchronized_frame_seq: None,
+            image_width,
+            image_height,
+            image_format,
+            image_size,
         })
     }
 
@@ -60,15 +83,15 @@ impl ShmPublisher {
     ) where
         F: FnOnce(&mut Self),
     {
-        assert_eq!(data.len(), IMAGE_SIZE, "Image size mismatch");
+        assert_eq!(data.len(), self.image_size, "Image size mismatch");
 
         let buffer_id = self.current_buffer_id;
         self.current_buffer_id = (self.current_buffer_id + 1) % 3;
 
         unsafe {
             let pool_ptr = self.image_pool.as_ptr();
-            let dst = pool_ptr.add(buffer_id as usize * IMAGE_SIZE);
-            std::ptr::copy_nonoverlapping(data.as_ptr(), dst, IMAGE_SIZE);
+            let dst = pool_ptr.add(buffer_id as usize * self.image_size);
+            std::ptr::copy_nonoverlapping(data.as_ptr(), dst, self.image_size);
         }
 
         // Publish data associated with this image only after the expensive pixel copy. The image
@@ -86,10 +109,10 @@ impl ShmPublisher {
             let slot = producer.borrow_mut();
             slot.seq = seq;
             slot.timestamp_ns = timestamp_ns;
-            slot.width = IMAGE_WIDTH;
-            slot.height = IMAGE_HEIGHT;
+            slot.width = self.image_width;
+            slot.height = self.image_height;
             slot.buffer_id = buffer_id;
-            slot.format = 0;
+            slot.format = self.image_format as u8;
             producer.publish();
         }
     }
