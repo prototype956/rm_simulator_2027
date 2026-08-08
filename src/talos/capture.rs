@@ -67,7 +67,7 @@ impl SnapshotSync for TalosSnapshotSync {
     fn captured(
         self: Box<Self>,
         world: &mut DeferredWorld,
-        _config: &CaptureConfig,
+        config: &CaptureConfig,
     ) -> Box<dyn SnapshotAsync> {
         let ctx = world.resource::<TalosCaptureContextShared>().0.clone();
 
@@ -76,6 +76,8 @@ impl SnapshotSync for TalosSnapshotSync {
             frame_seq: self.frame_seq,
             timestamp_ns: self.timestamp_ns,
             pose: self.pose,
+            expected_width: config.width,
+            expected_height: config.height,
         })
     }
 }
@@ -85,11 +87,13 @@ struct TalosSnapshot {
     frame_seq: u64,
     timestamp_ns: u64,
     pose: CapturedPoseData,
+    expected_width: u32,
+    expected_height: u32,
 }
 
 impl SnapshotAsync for TalosSnapshot {
     fn captured(&mut self, frame: CapturedFrame<'_>) {
-        if frame.kind != CapturedFrameKind::Rgb8 {
+        if frame.kind != CapturedFrameKind::Bgr8 {
             return;
         }
 
@@ -103,10 +107,10 @@ impl SnapshotAsync for TalosSnapshot {
             return;
         }
 
-        if frame.width != IMAGE_WIDTH || frame.height != IMAGE_HEIGHT {
+        if frame.width != self.expected_width || frame.height != self.expected_height {
             warn!(
-                "image reesolution mismatched: expected {}x{}, got {}x{}",
-                IMAGE_WIDTH, IMAGE_HEIGHT, frame.width, frame.height
+                "image resolution mismatched: expected {}x{}, got {}x{}",
+                self.expected_width, self.expected_height, frame.width, frame.height
             );
             return;
         }

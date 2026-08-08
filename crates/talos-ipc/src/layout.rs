@@ -5,7 +5,7 @@ pub const IMAGE_HEIGHT: u32 = 1080;
 
 pub const CACHE_LINE_SIZE: usize = 64;
 pub const SHM_MAGIC: u32 = 0x54414C05;
-pub const SHM_VERSION: u32 = 2;
+pub const SHM_VERSION: u32 = 3;
 
 pub const IMAGE_CHANNELS: u32 = 3;
 pub const IMAGE_SIZE: usize = (IMAGE_WIDTH * IMAGE_HEIGHT * IMAGE_CHANNELS) as usize;
@@ -15,6 +15,31 @@ pub const SHM_NAME_IMAGE_POOL: &str = "talos_ipc_image_pool";
 
 pub const FLAG_NEW: u8 = 0x80;
 pub const INDEX_MASK: u8 = 0x03;
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageFormat {
+    Rgb8 = 0,
+    Bgr8 = 1,
+}
+
+impl ImageFormat {
+    pub const fn channels(self) -> usize {
+        match self {
+            Self::Rgb8 | Self::Bgr8 => IMAGE_CHANNELS as usize,
+        }
+    }
+}
+
+pub fn image_size(width: u32, height: u32, format: ImageFormat) -> Option<usize> {
+    (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(format.channels())
+}
+
+pub fn image_pool_size(width: u32, height: u32, format: ImageFormat) -> Option<usize> {
+    image_size(width, height, format)?.checked_mul(3)
+}
 
 #[repr(C, align(32))]
 #[derive(Debug, Clone, Copy, Default)]
