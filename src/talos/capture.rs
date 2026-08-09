@@ -6,13 +6,15 @@ use crate::capture::{
     },
     setup_capture_camera, setup_preview_window, sync_capture_camera,
 };
-use crate::components::{Controlled, InfantryGimbal, InfantryLaunchOffset, SubscribeAutoAim};
+use crate::components::{
+    Controlled, Infantry, InfantryChassis, InfantryGimbal, InfantryLaunchOffset, SubscribeAutoAim,
+};
+use crate::robomaster::prelude::{ArmorRoot, Team};
 use crate::systems::{ChassisObservationFrame, GameplaySystems};
 use crate::talos::plugin::{to_ros_quat, to_ros_translation};
 use bevy::ecs::world::DeferredWorld;
 use bevy::prelude::*;
 use bevy::render::{Extract, ExtractSchedule, RenderApp, RenderSystems};
-use std::f32::consts::PI;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -43,12 +45,16 @@ pub struct ExtractedPoseData {
 /// Pose data captured at frame snapshot time
 #[derive(Clone)]
 struct CapturedPoseData {
-    gimbal_ros: [f32; 3],
-    gimbal_quat: [f32; 4],
-    muzzle_rel: [f32; 3],
-    camera_rel: [f32; 3],
+    camera_info: CameraInfo,
+    world_t_gimbal: RigidTransformF32,
+    gimbal_t_camera_optical: RigidTransformF32,
+    gimbal_t_muzzle: RigidTransformF32,
     chassis_observation: ChassisObservation,
+    ground_truth: GroundTruthBatch,
 }
+
+#[derive(Resource, Debug, Clone, Copy)]
+struct TalosCameraCalibration(CameraInfo);
 
 fn now_ns() -> u64 {
     SystemTime::now()
@@ -116,14 +122,20 @@ impl SnapshotAsync for TalosSnapshot {
         }
 
         if let Ok(mut publisher) = self.ctx.lock() {
-            let _ = publisher.try_publish_synchronized_image(
-                frame.data,
-                self.frame_seq,
-                self.timestamp_ns,
-                |publisher| {
-                    publish_pose_data(publisher, self.frame_seq, self.timestamp_ns, &self.pose);
-                },
-            );
+            let mut camera_info = self.pose.camera_info;
+            camera_info.timestamp_ns = self.timestamp_ns;
+            let metadata = CapturedFrameMeta {
+                frame_seq: self.frame_seq,
+                capture_timestamp_ns: self.timestamp_ns,
+                camera_info,
+                world_t_gimbal: self.pose.world_t_gimbal,
+                gimbal_t_camera_optical: self.pose.gimbal_t_camera_optical,
+                gimbal_t_muzzle: self.pose.gimbal_t_muzzle,
+                chassis_observation: self.pose.chassis_observation,
+                ground_truth: self.pose.ground_truth,
+                ..default()
+            };
+            let _ = publisher.try_publish_frame(frame.data, metadata);
         }
     }
 }
@@ -193,30 +205,24 @@ impl Plugin for TalosCapturePlugin {
         );
         let render_target_handle = capture.color_target().unwrap().clone();
 
-        {
-            let mut publisher = self.context.publisher.lock().unwrap();
-            let intrinsics = compute_camera_intrinsics(
-                self.config.width,
-                self.config.height,
-                self.context.fov_y,
-            );
-
-            publisher.set_camera_info(CameraInfo {
-                timestamp_ns: now_ns(),
-                fx: intrinsics.fx,
-                fy: intrinsics.fy,
-                cx: intrinsics.cx,
-                cy: intrinsics.cy,
-                distortion: [0.0; 5],
-                width: intrinsics.width,
-                height: intrinsics.height,
-                _pad: [0; 24],
-            });
-        }
+        let intrinsics =
+            compute_camera_intrinsics(self.config.width, self.config.height, self.context.fov_y);
+        let camera_info = CameraInfo {
+            timestamp_ns: 0,
+            fx: intrinsics.fx,
+            fy: intrinsics.fy,
+            cx: intrinsics.cx,
+            cy: intrinsics.cy,
+            distortion: [0.0; 5],
+            width: intrinsics.width,
+            height: intrinsics.height,
+            _pad: [0; 24],
+        };
 
         app.add_plugins(capture)
             .insert_resource(ImageHandle(render_target_handle))
             .insert_resource(CameraFov(self.context.fov_y))
+            .insert_resource(TalosCameraCalibration(camera_info))
             .insert_resource(self.context.clone())
             .add_systems(Startup, setup_capture_camera)
             .add_systems(Startup, setup_preview_window)
@@ -245,6 +251,13 @@ fn extract_pose_data(
         Query<(&GlobalTransform, &Transform), (With<InfantryLaunchOffset>, With<Controlled>)>,
     >,
     chassis_obs: Extract<Res<ChassisObservationFrame>>,
+    calibration: Extract<Res<TalosCameraCalibration>>,
+    robots: Extract<Query<(Entity, &GlobalTransform, &Infantry)>>,
+    chassis: Extract<Query<(&GlobalTransform, &InfantryChassis)>>,
+    armor_roots: Extract<Query<(Entity, &ArmorRoot)>>,
+    children: Extract<Query<&Children>>,
+    names: Extract<Query<&Name>>,
+    global_transforms: Extract<Query<&GlobalTransform>>,
 ) {
     pose_data.frame_seq = frame_stamp.frame_seq;
     pose_data.timestamp_ns = frame_stamp.timestamp_ns;
@@ -271,6 +284,13 @@ fn extract_pose_data(
         muzzle_global,
         muzzle_local,
         &chassis_obs,
+        calibration.0,
+        &robots,
+        &chassis,
+        &armor_roots,
+        &children,
+        &names,
+        &global_transforms,
         pose_data.frame_seq,
         pose_data.timestamp_ns,
     ));
@@ -283,26 +303,54 @@ fn captured_pose_data(
     muzzle_global: &GlobalTransform,
     muzzle_local: &Transform,
     chassis_obs: &ChassisObservationFrame,
+    camera_info: CameraInfo,
+    robots: &Query<(Entity, &GlobalTransform, &Infantry)>,
+    chassis: &Query<(&GlobalTransform, &InfantryChassis)>,
+    armor_roots: &Query<(Entity, &ArmorRoot)>,
+    children: &Query<&Children>,
+    names: &Query<&Name>,
+    global_transforms: &Query<&GlobalTransform>,
     frame_seq: u64,
     timestamp_ns: u64,
 ) -> CapturedPoseData {
-    let cam_rel = cam_transform.reparented_to(gimbal_transform);
-    let muzzle_rel = muzzle_global.reparented_to(gimbal_transform);
+    let shot_rotation = gimbal_transform.rotation() * muzzle_local.rotation;
+    let world_t_gimbal = transform_from_axes(
+        to_ros_translation(gimbal_transform.translation()),
+        to_ros_translation(shot_rotation * Vec3::Y),
+        to_ros_translation(shot_rotation * -Vec3::X),
+        to_ros_translation(shot_rotation * Vec3::Z),
+    );
 
-    let gimbal_rot = gimbal_transform.rotation()
-        * muzzle_local.rotation
-        * Quat::from_euler(EulerRot::ZYX, 0.0, 0.0, PI / 2.0);
+    let camera_rotation = cam_transform.rotation();
+    let world_t_camera = transform_from_axes(
+        to_ros_translation(cam_transform.translation()),
+        to_ros_translation(camera_rotation * Vec3::X),
+        to_ros_translation(camera_rotation * -Vec3::Y),
+        to_ros_translation(camera_rotation * -Vec3::Z),
+    );
+    let gimbal_t_camera_optical = relative_transform(world_t_gimbal, world_t_camera);
 
-    let gimbal_ros = to_ros_translation(gimbal_transform.translation());
-    let gimbal_rot = to_ros_quat(gimbal_rot);
-    let muzzle = to_ros_translation(muzzle_rel.translation);
-    let camera = to_ros_translation(cam_rel.translation);
+    let world_muzzle = to_ros_translation(muzzle_global.translation());
+    let gimbal_rotation = quat_from_wire(world_t_gimbal.rotation);
+    let muzzle_translation =
+        gimbal_rotation.inverse() * (world_muzzle - Vec3::from_array(world_t_gimbal.translation));
+    let gimbal_t_muzzle = RigidTransformF32 {
+        translation: muzzle_translation.to_array(),
+        rotation: QuaternionF32 {
+            w: 1.0,
+            ..default()
+        },
+        ..default()
+    };
+
+    let recomposed_camera = compose_transform(world_t_gimbal, gimbal_t_camera_optical);
+    debug_assert!(transform_near(recomposed_camera, world_t_camera, 1.0e-4));
 
     CapturedPoseData {
-        gimbal_ros: [gimbal_ros.x, gimbal_ros.y, gimbal_ros.z],
-        gimbal_quat: [gimbal_rot.w, gimbal_rot.x, gimbal_rot.y, gimbal_rot.z],
-        muzzle_rel: [muzzle.x, muzzle.y, muzzle.z],
-        camera_rel: [camera.x, camera.y, camera.z],
+        camera_info,
+        world_t_gimbal,
+        gimbal_t_camera_optical,
+        gimbal_t_muzzle,
         chassis_observation: ChassisObservation {
             frame_seq,
             timestamp_ns,
@@ -330,68 +378,182 @@ fn captured_pose_data(
             ],
             _pad: [0; 16],
         },
+        ground_truth: capture_ground_truth(
+            robots,
+            chassis,
+            armor_roots,
+            children,
+            names,
+            global_transforms,
+            frame_seq,
+            timestamp_ns,
+        ),
     }
 }
 
-fn publish_pose_data(
-    publisher: &mut ShmPublisher,
+fn wire_quaternion(rotation: Quat) -> QuaternionF32 {
+    let q = rotation.normalize();
+    QuaternionF32 {
+        x: q.x,
+        y: q.y,
+        z: q.z,
+        w: q.w,
+    }
+}
+
+fn quat_from_wire(rotation: QuaternionF32) -> Quat {
+    Quat::from_xyzw(rotation.x, rotation.y, rotation.z, rotation.w)
+}
+
+fn transform_from_axes(origin: Vec3, x: Vec3, y: Vec3, z: Vec3) -> RigidTransformF32 {
+    let rotation = Quat::from_mat3(&Mat3::from_cols(
+        x.normalize(),
+        y.normalize(),
+        z.normalize(),
+    ));
+    RigidTransformF32 {
+        translation: origin.to_array(),
+        rotation: wire_quaternion(rotation),
+        ..default()
+    }
+}
+
+fn relative_transform(parent: RigidTransformF32, child: RigidTransformF32) -> RigidTransformF32 {
+    let parent_rotation = quat_from_wire(parent.rotation);
+    let child_rotation = quat_from_wire(child.rotation);
+    let translation = parent_rotation.inverse()
+        * (Vec3::from_array(child.translation) - Vec3::from_array(parent.translation));
+    RigidTransformF32 {
+        translation: translation.to_array(),
+        rotation: wire_quaternion(parent_rotation.inverse() * child_rotation),
+        ..default()
+    }
+}
+
+fn compose_transform(parent: RigidTransformF32, child: RigidTransformF32) -> RigidTransformF32 {
+    let parent_rotation = quat_from_wire(parent.rotation);
+    RigidTransformF32 {
+        translation: (Vec3::from_array(parent.translation)
+            + parent_rotation * Vec3::from_array(child.translation))
+        .to_array(),
+        rotation: wire_quaternion(parent_rotation * quat_from_wire(child.rotation)),
+        ..default()
+    }
+}
+
+fn transform_near(left: RigidTransformF32, right: RigidTransformF32, tolerance: f32) -> bool {
+    let translation_error =
+        Vec3::from_array(left.translation).distance(Vec3::from_array(right.translation));
+    let rotation_error =
+        quat_from_wire(left.rotation).angle_between(quat_from_wire(right.rotation));
+    translation_error <= tolerance && rotation_error <= tolerance
+}
+
+fn capture_ground_truth(
+    robots: &Query<(Entity, &GlobalTransform, &Infantry)>,
+    chassis: &Query<(&GlobalTransform, &InfantryChassis)>,
+    armor_roots: &Query<(Entity, &ArmorRoot)>,
+    children: &Query<&Children>,
+    names: &Query<&Name>,
+    global_transforms: &Query<&GlobalTransform>,
     frame_seq: u64,
     timestamp_ns: u64,
-    pose: &CapturedPoseData,
-) {
-    publisher.publish_pose(
-        PoseIndex::Odom,
-        pose.gimbal_ros,
-        [1.0, 0.0, 0.0, 0.0],
+) -> GroundTruthBatch {
+    let mut batch = GroundTruthBatch {
         frame_seq,
         timestamp_ns,
-    );
+        ..default()
+    };
 
-    publisher.publish_pose(
-        PoseIndex::Gimbal,
-        [0.0, 0.0, 0.0],
-        pose.gimbal_quat,
-        frame_seq,
-        timestamp_ns,
-    );
+    for (entity, transform, infantry) in robots.iter() {
+        if batch.target_count as usize >= GROUND_TRUTH_MAX_TARGETS {
+            break;
+        }
+        let position = to_ros_translation(transform.translation());
+        // Infantry 位于机器人根实体，但车身朝向实际施加在其 BASE/InfantryChassis
+        // 子实体上。使用子实体的全局姿态，避免所有根实体的单位旋转被导出为 yaw=0。
+        let (heading_transform, vyaw) = find_chassis_descendant(entity, children, chassis)
+            .and_then(|chassis_entity| chassis.get(chassis_entity).ok())
+            .map(|(chassis_transform, chassis_state)| {
+                (chassis_transform, chassis_state.yaw_velocity)
+            })
+            .unwrap_or((transform, 0.0));
+        let rotation = to_ros_quat(heading_transform.rotation());
+        let (_, _, yaw) = rotation.to_euler(EulerRot::XYZ);
+        let index = batch.target_count as usize;
+        batch.targets[index] = GroundTruthTarget {
+            frame_seq,
+            timestamp_ns,
+            id: entity.to_bits(),
+            team: match infantry.team {
+                Team::Red => 0,
+                Team::Blue => 1,
+            },
+            armor_label: infantry.config.armor.label() as u8,
+            position: position.to_array(),
+            vyaw,
+            yaw,
+            ..default()
+        };
+        batch.target_count += 1;
+    }
 
-    publisher.publish_pose(
-        PoseIndex::Muzzle,
-        pose.muzzle_rel,
-        [1.0, 0.0, 0.0, 0.0],
-        frame_seq,
-        timestamp_ns,
-    );
+    for (entity, armor) in armor_roots.iter() {
+        if batch.projection_probe_count as usize >= PROJECTION_PROBE_MAX_COUNT {
+            break;
+        }
+        let Some(center) = find_named_suffix_descendant(entity, "CENTER", children, names) else {
+            continue;
+        };
+        let Ok(center_transform) = global_transforms.get(center) else {
+            continue;
+        };
+        let index = batch.projection_probe_count as usize;
+        batch.projection_probes[index] = ProjectionProbe {
+            id: (entity.to_bits() << 8) ^ armor.id.as_usize() as u64,
+            position_world: to_ros_translation(center_transform.translation()).to_array(),
+            ..default()
+        };
+        batch.projection_probe_count += 1;
+    }
+    batch
+}
 
-    publisher.publish_pose(
-        PoseIndex::Camera,
-        pose.camera_rel,
-        [1.0, 0.0, 0.0, 0.0],
-        frame_seq,
-        timestamp_ns,
-    );
+fn find_chassis_descendant(
+    root: Entity,
+    children: &Query<&Children>,
+    chassis: &Query<(&GlobalTransform, &InfantryChassis)>,
+) -> Option<Entity> {
+    let mut pending = vec![root];
+    while let Some(entity) = pending.pop() {
+        if chassis.get(entity).is_ok() {
+            return Some(entity);
+        }
+        if let Ok(descendants) = children.get(entity) {
+            pending.extend(descendants.iter());
+        }
+    }
+    None
+}
 
-    let mut observation = pose.chassis_observation;
-    observation.frame_seq = frame_seq;
-    observation.timestamp_ns = timestamp_ns;
-    publisher.publish_chassis_observation(observation);
-
-    // Legacy compatibility path for consumers still reading pose slot 4.
-    publisher.publish_pose_with_aux(
-        PoseIndex::ChassisObservation,
-        [
-            observation.v_body[0],
-            observation.v_body[1],
-            observation.wz_radps,
-        ],
-        observation.wheel_angular_radps,
-        [
-            observation.a_body[0],
-            observation.a_body[1],
-            observation.alpha_z_radps2,
-            observation.dt_s,
-        ],
-        frame_seq,
-        timestamp_ns,
-    );
+fn find_named_suffix_descendant(
+    root: Entity,
+    wanted: &str,
+    children: &Query<&Children>,
+    names: &Query<&Name>,
+) -> Option<Entity> {
+    let mut pending = vec![root];
+    while let Some(entity) = pending.pop() {
+        // GLB 节点带有装甲序号和规格前缀，例如 `1__L_ARMOR_CENTER`。
+        if names
+            .get(entity)
+            .is_ok_and(|name| name.as_str().ends_with(wanted))
+        {
+            return Some(entity);
+        }
+        if let Ok(descendants) = children.get(entity) {
+            pending.extend(descendants.iter());
+        }
+    }
+    None
 }

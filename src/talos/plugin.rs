@@ -101,11 +101,6 @@ impl Plugin for TalosPlugin {
         );
         app.add_systems(
             Last,
-            crate::talos::ground_truth::publish_ground_truth_system
-                .after(publish_talos_runtime_state_system),
-        );
-        app.add_systems(
-            Last,
             process_subscription
                 .run_if(|enabled: Res<SubscribeAutoAim>| enabled.load(Ordering::Acquire)),
         );
@@ -160,19 +155,6 @@ fn heartbeat_system(context: Option<Res<TalosCaptureContext>>) {
         if let Ok(mut publisher) = ctx.publisher.lock() {
             publisher.update_heartbeat();
         }
-    }
-}
-
-pub fn publish_pose(
-    context: &TalosCaptureContext,
-    index: PoseIndex,
-    position: [f32; 3],
-    quaternion: [f32; 4],
-    frame_seq: u64,
-    timestamp_ns: u64,
-) {
-    if let Ok(mut publisher) = context.publisher.lock() {
-        publisher.publish_pose(index, position, quaternion, frame_seq, timestamp_ns);
     }
 }
 

@@ -102,15 +102,15 @@
 
 ### Talos 共享内存接口
 
-当前协议版本为 v3。图像池大小跟随 `config.toml` 的 `capture.color` 动态创建，
-Daedalus 默认发布 BGR8；元数据、同步位姿和云台命令仍使用三缓冲握手。
+当前协议版本为不兼容旧版的 v4。图像池大小跟随 `config.toml` 的 `capture.color` 动态创建，
+Daedalus 默认发布 BGR8。图像索引、采集时间、内参、空间变换、底盘观测和本帧真值放在
+同一个 `CapturedFrameMeta` 三缓冲槽中，像素复制完成后一次提交。
 
-**发布姿势**（零拷贝共享内存）
+**发布坐标链**（零拷贝共享内存）
 
-* `odom` - 底盘里程计姿势
-* `gimbal` - 云台旋转姿势
-* `muzzle` - 枪口偏移姿势
-* `camera` - 相机外参姿势
+* `world_t_gimbal` - 世界系到标准云台系，云台 x 轴沿发射方向
+* `gimbal_t_camera_optical` - 云台系到 OpenCV 相机光学系
+* `gimbal_t_muzzle` - 云台系下的枪口偏移
 
 **订阅命令**
 

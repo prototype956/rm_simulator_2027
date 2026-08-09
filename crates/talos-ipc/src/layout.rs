@@ -5,7 +5,7 @@ pub const IMAGE_HEIGHT: u32 = 1080;
 
 pub const CACHE_LINE_SIZE: usize = 64;
 pub const SHM_MAGIC: u32 = 0x54414C05;
-pub const SHM_VERSION: u32 = 3;
+pub const SHM_VERSION: u32 = 4;
 
 pub const IMAGE_CHANNELS: u32 = 3;
 pub const IMAGE_SIZE: usize = (IMAGE_WIDTH * IMAGE_HEIGHT * IMAGE_CHANNELS) as usize;
@@ -41,41 +41,24 @@ pub fn image_pool_size(width: u32, height: u32, format: ImageFormat) -> Option<u
     image_size(width, height, format)?.checked_mul(3)
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct QuaternionF32 {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub w: f32,
+}
+const _: () = assert!(size_of::<QuaternionF32>() == 16);
+
 #[repr(C, align(32))]
 #[derive(Debug, Clone, Copy, Default)]
-pub struct ImageMeta {
-    pub seq: u64,
-    pub timestamp_ns: u64,
-    pub width: u32,
-    pub height: u32,
-    pub buffer_id: u8,
-    pub format: u8,
-    pub _pad: [u8; 6],
+pub struct RigidTransformF32 {
+    pub translation: [f32; 3],
+    pub rotation: QuaternionF32,
+    pub _pad: [u8; 4],
 }
-const _: () = assert!(size_of::<ImageMeta>() == 32);
-
-#[repr(C, align(64))]
-#[derive(Debug, Clone, Copy)]
-pub struct PoseMeta {
-    pub frame_seq: u64,
-    pub position: [f32; 3],
-    pub quaternion: [f32; 4],
-    pub timestamp_ns: u64,
-    pub _pad: [u8; 16],
-}
-const _: () = assert!(size_of::<PoseMeta>() == 64);
-
-impl Default for PoseMeta {
-    fn default() -> Self {
-        Self {
-            frame_seq: 0,
-            position: [0.0; 3],
-            quaternion: [0.0; 4],
-            timestamp_ns: 0,
-            _pad: [0; 16],
-        }
-    }
-}
+const _: () = assert!(size_of::<RigidTransformF32>() == 32);
 
 #[repr(C, align(32))]
 #[derive(Debug, Clone, Copy, Default)]
@@ -144,26 +127,6 @@ impl Default for ChassisObservation {
 }
 
 #[repr(C, align(64))]
-pub struct ImageTripleBuffer {
-    pub state: AtomicU8,
-    pub write_idx: u8,
-    pub read_idx: u8,
-    pub _pad1: [u8; 61],
-    pub slots: [ImageMeta; 3],
-}
-const _: () = assert!(size_of::<ImageTripleBuffer>() == 192);
-
-#[repr(C, align(64))]
-pub struct PoseTripleBuffer {
-    pub state: AtomicU8,
-    pub write_idx: u8,
-    pub read_idx: u8,
-    pub _pad1: [u8; 61],
-    pub slots: [PoseMeta; 3],
-}
-const _: () = assert!(size_of::<PoseTripleBuffer>() == 256);
-
-#[repr(C, align(64))]
 pub struct GimbalTripleBuffer {
     pub state: AtomicU8,
     pub write_idx: u8,
@@ -187,12 +150,14 @@ const _: () = assert!(size_of::<ShmHeader>() == 64);
 
 pub const GROUND_TRUTH_MAX_TARGETS: usize = 16;
 pub const GROUND_TRUTH_MAX_RUNES: usize = 4;
+pub const PROJECTION_PROBE_MAX_COUNT: usize = 32;
 
 #[repr(C, align(32))]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GroundTruthTarget {
     pub frame_seq: u64,
     pub timestamp_ns: u64,
+    pub id: u64,
     pub team: u8,
     pub armor_label: u8,
     pub is_outpost: u8,
@@ -200,9 +165,18 @@ pub struct GroundTruthTarget {
     pub position: [f32; 3],
     pub vyaw: f32,
     pub yaw: f32,
-    pub _pad: [u8; 24],
+    pub _pad: [u8; 16],
 }
 const _: () = assert!(size_of::<GroundTruthTarget>() == 64);
+
+#[repr(C, align(32))]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProjectionProbe {
+    pub id: u64,
+    pub position_world: [f32; 3],
+    pub _pad: [u8; 12],
+}
+const _: () = assert!(size_of::<ProjectionProbe>() == 32);
 
 #[repr(C, align(64))]
 #[derive(Debug, Clone, Copy)]
@@ -262,11 +236,13 @@ pub struct GroundTruthBatch {
     pub timestamp_ns: u64,
     pub target_count: u32,
     pub rune_count: u32,
+    pub projection_probe_count: u32,
+    pub _pad1: u32,
     pub targets: [GroundTruthTarget; GROUND_TRUTH_MAX_TARGETS],
     pub runes: [GroundTruthRune; GROUND_TRUTH_MAX_RUNES],
-    pub _pad: [u8; 64],
+    pub projection_probes: [ProjectionProbe; PROJECTION_PROBE_MAX_COUNT],
 }
-const _: () = assert!(size_of::<GroundTruthBatch>() == 1664);
+const _: () = assert!(size_of::<GroundTruthBatch>() == 2624);
 
 impl Default for GroundTruthBatch {
     fn default() -> Self {
@@ -275,12 +251,44 @@ impl Default for GroundTruthBatch {
             timestamp_ns: 0,
             target_count: 0,
             rune_count: 0,
+            projection_probe_count: 0,
+            _pad1: 0,
             targets: [GroundTruthTarget::default(); GROUND_TRUTH_MAX_TARGETS],
             runes: [GroundTruthRune::default(); GROUND_TRUTH_MAX_RUNES],
-            _pad: [0; 64],
+            projection_probes: [ProjectionProbe::default(); PROJECTION_PROBE_MAX_COUNT],
         }
     }
 }
+
+#[repr(C, align(64))]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CapturedFrameMeta {
+    pub frame_seq: u64,
+    pub capture_timestamp_ns: u64,
+    pub width: u32,
+    pub height: u32,
+    pub buffer_id: u8,
+    pub format: u8,
+    pub _pad1: [u8; 30],
+    pub camera_info: CameraInfo,
+    pub world_t_gimbal: RigidTransformF32,
+    pub gimbal_t_camera_optical: RigidTransformF32,
+    pub gimbal_t_muzzle: RigidTransformF32,
+    pub _pad2: [u8; 32],
+    pub chassis_observation: ChassisObservation,
+    pub ground_truth: GroundTruthBatch,
+}
+const _: () = assert!(size_of::<CapturedFrameMeta>() == 3072);
+
+#[repr(C, align(64))]
+pub struct FrameTripleBuffer {
+    pub state: AtomicU8,
+    pub write_idx: u8,
+    pub read_idx: u8,
+    pub _pad1: [u8; 61],
+    pub slots: [CapturedFrameMeta; 3],
+}
+const _: () = assert!(size_of::<FrameTripleBuffer>() == 9280);
 
 #[repr(C, align(64))]
 #[derive(Debug, Clone, Copy)]
@@ -304,52 +312,23 @@ impl Default for RuntimeState {
 #[repr(C)]
 pub struct ShmMetaRegion {
     pub header: ShmHeader,
-    pub image: ImageTripleBuffer,
-    pub poses: [PoseTripleBuffer; 5],
+    pub frame: FrameTripleBuffer,
     pub gimbal_cmd: GimbalTripleBuffer,
-    pub camera_info: CameraInfo,
-    pub chassis_observation: ChassisObservation,
-    pub ground_truth: GroundTruthBatch,
     pub runtime_state: RuntimeState,
 }
-const _: () = assert!(size_of::<ShmMetaRegion>() == 3712);
-const _: () = assert!(std::mem::offset_of!(ShmMetaRegion, camera_info) == 1728);
-const _: () = assert!(std::mem::offset_of!(ShmMetaRegion, chassis_observation) == 1856);
-const _: () = assert!(std::mem::offset_of!(ShmMetaRegion, ground_truth) == 1984);
-const _: () = assert!(std::mem::offset_of!(ShmMetaRegion, runtime_state) == 3648);
+const _: () = assert!(size_of::<ShmMetaRegion>() == 9600);
+const _: () = assert!(std::mem::offset_of!(ShmMetaRegion, frame) == 64);
+const _: () = assert!(std::mem::offset_of!(ShmMetaRegion, gimbal_cmd) == 9344);
+const _: () = assert!(std::mem::offset_of!(ShmMetaRegion, runtime_state) == 9536);
 
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PoseIndex {
-    Gimbal = 0,
-    Odom = 1,
-    Muzzle = 2,
-    Camera = 3,
-    // Legacy compatibility channel.
-    // New integrations should consume `ShmMetaRegion::chassis_observation` instead.
-    ChassisObservation = 4,
-}
-
-impl Default for ImageTripleBuffer {
+impl Default for FrameTripleBuffer {
     fn default() -> Self {
         Self {
             state: AtomicU8::new(1),
             write_idx: 0,
             read_idx: 2,
             _pad1: [0; 61],
-            slots: [ImageMeta::default(); 3],
-        }
-    }
-}
-
-impl Default for PoseTripleBuffer {
-    fn default() -> Self {
-        Self {
-            state: AtomicU8::new(1),
-            write_idx: 0,
-            read_idx: 2,
-            _pad1: [0; 61],
-            slots: [PoseMeta::default(); 3],
+            slots: [CapturedFrameMeta::default(); 3],
         }
     }
 }
@@ -384,18 +363,8 @@ impl Default for ShmMetaRegion {
     fn default() -> Self {
         Self {
             header: ShmHeader::default(),
-            image: ImageTripleBuffer::default(),
-            poses: [
-                PoseTripleBuffer::default(),
-                PoseTripleBuffer::default(),
-                PoseTripleBuffer::default(),
-                PoseTripleBuffer::default(),
-                PoseTripleBuffer::default(),
-            ],
+            frame: FrameTripleBuffer::default(),
             gimbal_cmd: GimbalTripleBuffer::default(),
-            camera_info: CameraInfo::default(),
-            chassis_observation: ChassisObservation::default(),
-            ground_truth: GroundTruthBatch::default(),
             runtime_state: RuntimeState::default(),
         }
     }

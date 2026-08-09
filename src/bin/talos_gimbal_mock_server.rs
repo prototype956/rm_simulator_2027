@@ -7,7 +7,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 // Use the talos-ipc crate instead of local modules
 use talos_ipc::{
-    CameraInfo, IMAGE_HEIGHT, IMAGE_SIZE, IMAGE_WIDTH, PoseIndex, ShmPublisher, ShmSubscriber,
+    CameraInfo, CapturedFrameMeta, IMAGE_HEIGHT, IMAGE_SIZE, IMAGE_WIDTH, QuaternionF32,
+    RigidTransformF32, ShmPublisher, ShmSubscriber,
 };
 
 type DynError = Box<dyn Error + Send + Sync + 'static>;
@@ -40,7 +41,6 @@ fn main() -> Result<(), DynError> {
 
     let mut publisher = ShmPublisher::create()?;
     let mut subscriber = ShmSubscriber::connect()?;
-    publisher.set_camera_info(default_camera_info());
 
     let frame_interval = if args.fps > 0.0 {
         Some(Duration::from_secs_f64(1.0 / args.fps))
@@ -153,8 +153,35 @@ fn publish_frame(
     frame_seq: u64,
 ) {
     let timestamp_ns = now_ns();
-    publisher.publish_image(rgb_frame, frame_seq, timestamp_ns);
-    publish_mock_poses(publisher, frame_seq, timestamp_ns);
+    let identity = QuaternionF32 {
+        w: 1.0,
+        ..Default::default()
+    };
+    let metadata = CapturedFrameMeta {
+        frame_seq,
+        capture_timestamp_ns: timestamp_ns,
+        camera_info: default_camera_info(timestamp_ns),
+        world_t_gimbal: RigidTransformF32 {
+            rotation: identity,
+            ..Default::default()
+        },
+        gimbal_t_camera_optical: RigidTransformF32 {
+            rotation: QuaternionF32 {
+                x: -0.5,
+                y: 0.5,
+                z: -0.5,
+                w: 0.5,
+            },
+            ..Default::default()
+        },
+        gimbal_t_muzzle: RigidTransformF32 {
+            translation: [0.2, 0.0, 0.0],
+            rotation: identity,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let _ = publisher.try_publish_frame(rgb_frame, metadata);
     publisher.update_heartbeat();
 
     if let Some(cmd) = subscriber.recv_gimbal_cmd() {
@@ -163,38 +190,6 @@ fn publish_frame(
             cmd.timestamp_ns, cmd.yaw_deg, cmd.pitch_deg, cmd.distance_m, cmd.fire_advice
         );
     }
-}
-
-fn publish_mock_poses(publisher: &mut ShmPublisher, frame_seq: u64, timestamp_ns: u64) {
-    let ident = [1.0, 0.0, 0.0, 0.0];
-    publisher.publish_pose(
-        PoseIndex::Odom,
-        [0.0, 0.0, 0.0],
-        ident,
-        frame_seq,
-        timestamp_ns,
-    );
-    publisher.publish_pose(
-        PoseIndex::Gimbal,
-        [0.0, 0.0, 0.0],
-        ident,
-        frame_seq,
-        timestamp_ns,
-    );
-    publisher.publish_pose(
-        PoseIndex::Muzzle,
-        [0.0, 0.0, 0.2],
-        ident,
-        frame_seq,
-        timestamp_ns,
-    );
-    publisher.publish_pose(
-        PoseIndex::Camera,
-        [0.0, 0.0, 0.0],
-        ident,
-        frame_seq,
-        timestamp_ns,
-    );
 }
 
 fn copy_frame_rgb24(frame: &ffmpeg::util::frame::Video, dst: &mut [u8]) -> Result<(), DynError> {
@@ -231,9 +226,9 @@ fn copy_frame_rgb24(frame: &ffmpeg::util::frame::Video, dst: &mut [u8]) -> Resul
     Ok(())
 }
 
-fn default_camera_info() -> CameraInfo {
+fn default_camera_info(timestamp_ns: u64) -> CameraInfo {
     CameraInfo {
-        timestamp_ns: now_ns(),
+        timestamp_ns,
         fx: IMAGE_WIDTH as f64,
         fy: IMAGE_HEIGHT as f64,
         cx: IMAGE_WIDTH as f64 / 2.0,
