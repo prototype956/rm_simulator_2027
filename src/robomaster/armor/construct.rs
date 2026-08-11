@@ -105,6 +105,9 @@ pub struct ArmorConstructor<'w, 's> {
 #[derive(Component, Clone)]
 pub struct ArmorRoot {
     pub id: ArmorId,
+    pub team: Team,
+    pub spec: ArmorSpec,
+    pub label: ArmorLabel,
 }
 
 impl ArmorRoot {
@@ -265,6 +268,9 @@ impl ArmorConstructor<'_, '_> {
         static ID: AtomicUsize = AtomicUsize::new(0);
         let ar = ArmorRoot {
             id: ArmorId(ID.fetch_add(1, Ordering::SeqCst)),
+            team: armor_data.team,
+            spec: armor_data.spec,
+            label: armor_data.spec.label(),
         };
 
         let lights = light_roots.map(|light_root| {

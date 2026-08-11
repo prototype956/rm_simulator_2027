@@ -102,9 +102,11 @@
 
 ### Talos 共享内存接口
 
-当前协议版本为不兼容旧版的 v4。图像池大小跟随 `config.toml` 的 `capture.color` 动态创建，
+当前协议版本为不兼容旧版的 v5。图像池大小跟随 `config.toml` 的 `capture.color` 动态创建，
 Daedalus 默认发布 BGR8。图像索引、采集时间、内参、空间变换、底盘观测和本帧真值放在
 同一个 `CapturedFrameMeta` 三缓冲槽中，像素复制完成后一次提交。
+每块装甲真值携带队伍、标签、大小类型、`world_t_armor` 和按 TL/TR/BR/BL 排列的
+135/225×55 mm 灯条端点世界坐标，可直接用于视觉端 PnP 基准验证。
 
 **发布坐标链**（零拷贝共享内存）
 

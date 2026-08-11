@@ -5,7 +5,7 @@ pub const IMAGE_HEIGHT: u32 = 1080;
 
 pub const CACHE_LINE_SIZE: usize = 64;
 pub const SHM_MAGIC: u32 = 0x54414C05;
-pub const SHM_VERSION: u32 = 4;
+pub const SHM_VERSION: u32 = 5;
 
 pub const IMAGE_CHANNELS: u32 = 3;
 pub const IMAGE_SIZE: usize = (IMAGE_WIDTH * IMAGE_HEIGHT * IMAGE_CHANNELS) as usize;
@@ -150,7 +150,7 @@ const _: () = assert!(size_of::<ShmHeader>() == 64);
 
 pub const GROUND_TRUTH_MAX_TARGETS: usize = 16;
 pub const GROUND_TRUTH_MAX_RUNES: usize = 4;
-pub const PROJECTION_PROBE_MAX_COUNT: usize = 32;
+pub const GROUND_TRUTH_MAX_ARMORS: usize = 32;
 
 #[repr(C, align(32))]
 #[derive(Debug, Clone, Copy, Default)]
@@ -169,14 +169,23 @@ pub struct GroundTruthTarget {
 }
 const _: () = assert!(size_of::<GroundTruthTarget>() == 64);
 
-#[repr(C, align(32))]
+#[repr(C, align(64))]
 #[derive(Debug, Clone, Copy, Default)]
-pub struct ProjectionProbe {
+pub struct GroundTruthArmor {
     pub id: u64,
-    pub position_world: [f32; 3],
-    pub _pad: [u8; 12],
+    pub team: u8,
+    pub label: u8,
+    pub armor_type: u8,
+    pub _pad1: u8,
+    pub width_m: f32,
+    pub height_m: f32,
+    pub _pad2: [u8; 12],
+    pub world_t_armor: RigidTransformF32,
+    /// TL/TR/BR/BL light-bar endpoints in the ROS world frame.
+    pub corners_world: [[f32; 3]; 4],
+    pub _pad3: [u8; 16],
 }
-const _: () = assert!(size_of::<ProjectionProbe>() == 32);
+const _: () = assert!(size_of::<GroundTruthArmor>() == 128);
 
 #[repr(C, align(64))]
 #[derive(Debug, Clone, Copy)]
@@ -236,13 +245,13 @@ pub struct GroundTruthBatch {
     pub timestamp_ns: u64,
     pub target_count: u32,
     pub rune_count: u32,
-    pub projection_probe_count: u32,
+    pub armor_count: u32,
     pub _pad1: u32,
     pub targets: [GroundTruthTarget; GROUND_TRUTH_MAX_TARGETS],
     pub runes: [GroundTruthRune; GROUND_TRUTH_MAX_RUNES],
-    pub projection_probes: [ProjectionProbe; PROJECTION_PROBE_MAX_COUNT],
+    pub armors: [GroundTruthArmor; GROUND_TRUTH_MAX_ARMORS],
 }
-const _: () = assert!(size_of::<GroundTruthBatch>() == 2624);
+const _: () = assert!(size_of::<GroundTruthBatch>() == 5696);
 
 impl Default for GroundTruthBatch {
     fn default() -> Self {
@@ -251,11 +260,11 @@ impl Default for GroundTruthBatch {
             timestamp_ns: 0,
             target_count: 0,
             rune_count: 0,
-            projection_probe_count: 0,
+            armor_count: 0,
             _pad1: 0,
             targets: [GroundTruthTarget::default(); GROUND_TRUTH_MAX_TARGETS],
             runes: [GroundTruthRune::default(); GROUND_TRUTH_MAX_RUNES],
-            projection_probes: [ProjectionProbe::default(); PROJECTION_PROBE_MAX_COUNT],
+            armors: [GroundTruthArmor::default(); GROUND_TRUTH_MAX_ARMORS],
         }
     }
 }
@@ -278,7 +287,7 @@ pub struct CapturedFrameMeta {
     pub chassis_observation: ChassisObservation,
     pub ground_truth: GroundTruthBatch,
 }
-const _: () = assert!(size_of::<CapturedFrameMeta>() == 3072);
+const _: () = assert!(size_of::<CapturedFrameMeta>() == 6144);
 
 #[repr(C, align(64))]
 pub struct FrameTripleBuffer {
@@ -288,7 +297,7 @@ pub struct FrameTripleBuffer {
     pub _pad1: [u8; 61],
     pub slots: [CapturedFrameMeta; 3],
 }
-const _: () = assert!(size_of::<FrameTripleBuffer>() == 9280);
+const _: () = assert!(size_of::<FrameTripleBuffer>() == 18496);
 
 #[repr(C, align(64))]
 #[derive(Debug, Clone, Copy)]
@@ -316,10 +325,10 @@ pub struct ShmMetaRegion {
     pub gimbal_cmd: GimbalTripleBuffer,
     pub runtime_state: RuntimeState,
 }
-const _: () = assert!(size_of::<ShmMetaRegion>() == 9600);
+const _: () = assert!(size_of::<ShmMetaRegion>() == 18816);
 const _: () = assert!(std::mem::offset_of!(ShmMetaRegion, frame) == 64);
-const _: () = assert!(std::mem::offset_of!(ShmMetaRegion, gimbal_cmd) == 9344);
-const _: () = assert!(std::mem::offset_of!(ShmMetaRegion, runtime_state) == 9536);
+const _: () = assert!(std::mem::offset_of!(ShmMetaRegion, gimbal_cmd) == 18560);
+const _: () = assert!(std::mem::offset_of!(ShmMetaRegion, runtime_state) == 18752);
 
 impl Default for FrameTripleBuffer {
     fn default() -> Self {

@@ -9,7 +9,7 @@ use crate::capture::{
 use crate::components::{
     Controlled, Infantry, InfantryChassis, InfantryGimbal, InfantryLaunchOffset, SubscribeAutoAim,
 };
-use crate::robomaster::prelude::{ArmorRoot, Team};
+use crate::robomaster::prelude::{ArmorParts, ArmorRoot, ArmorSpec, Side, Team, VertexData};
 use crate::systems::{ChassisObservationFrame, GameplaySystems};
 use crate::talos::plugin::{to_ros_quat, to_ros_translation};
 use bevy::ecs::world::DeferredWorld;
@@ -254,7 +254,9 @@ fn extract_pose_data(
     calibration: Extract<Res<TalosCameraCalibration>>,
     robots: Extract<Query<(Entity, &GlobalTransform, &Infantry)>>,
     chassis: Extract<Query<(&GlobalTransform, &InfantryChassis)>>,
-    armor_roots: Extract<Query<(Entity, &ArmorRoot)>>,
+    armor_roots: Extract<Query<(Entity, &ArmorRoot, &ArmorParts)>>,
+    armor_vertices: Extract<Query<(&GlobalTransform, &VertexData)>>,
+    child_of: Extract<Query<&ChildOf>>,
     children: Extract<Query<&Children>>,
     names: Extract<Query<&Name>>,
     global_transforms: Extract<Query<&GlobalTransform>>,
@@ -288,6 +290,8 @@ fn extract_pose_data(
         &robots,
         &chassis,
         &armor_roots,
+        &armor_vertices,
+        &child_of,
         &children,
         &names,
         &global_transforms,
@@ -306,7 +310,9 @@ fn captured_pose_data(
     camera_info: CameraInfo,
     robots: &Query<(Entity, &GlobalTransform, &Infantry)>,
     chassis: &Query<(&GlobalTransform, &InfantryChassis)>,
-    armor_roots: &Query<(Entity, &ArmorRoot)>,
+    armor_roots: &Query<(Entity, &ArmorRoot, &ArmorParts)>,
+    armor_vertices: &Query<(&GlobalTransform, &VertexData)>,
+    child_of: &Query<&ChildOf>,
     children: &Query<&Children>,
     names: &Query<&Name>,
     global_transforms: &Query<&GlobalTransform>,
@@ -382,6 +388,8 @@ fn captured_pose_data(
             robots,
             chassis,
             armor_roots,
+            armor_vertices,
+            child_of,
             children,
             names,
             global_transforms,
@@ -452,7 +460,9 @@ fn transform_near(left: RigidTransformF32, right: RigidTransformF32, tolerance: 
 fn capture_ground_truth(
     robots: &Query<(Entity, &GlobalTransform, &Infantry)>,
     chassis: &Query<(&GlobalTransform, &InfantryChassis)>,
-    armor_roots: &Query<(Entity, &ArmorRoot)>,
+    armor_roots: &Query<(Entity, &ArmorRoot, &ArmorParts)>,
+    armor_vertices: &Query<(&GlobalTransform, &VertexData)>,
+    child_of: &Query<&ChildOf>,
     children: &Query<&Children>,
     names: &Query<&Name>,
     global_transforms: &Query<&GlobalTransform>,
@@ -498,8 +508,8 @@ fn capture_ground_truth(
         batch.target_count += 1;
     }
 
-    for (entity, armor) in armor_roots.iter() {
-        if batch.projection_probe_count as usize >= PROJECTION_PROBE_MAX_COUNT {
+    for (entity, armor_root, armor_parts) in armor_roots.iter() {
+        if batch.armor_count as usize >= GROUND_TRUTH_MAX_ARMORS {
             break;
         }
         let Some(center) = find_named_suffix_descendant(entity, "CENTER", children, names) else {
@@ -508,15 +518,173 @@ fn capture_ground_truth(
         let Ok(center_transform) = global_transforms.get(center) else {
             continue;
         };
-        let index = batch.projection_probe_count as usize;
-        batch.projection_probes[index] = ProjectionProbe {
-            id: (entity.to_bits() << 8) ^ armor.id.as_usize() as u64,
-            position_world: to_ros_translation(center_transform.translation()).to_array(),
+        let (armor_type, width_m) = match armor_root.spec {
+            ArmorSpec::Small(_) => (0, 0.135),
+            ArmorSpec::Large(_) => (1, 0.225),
+        };
+        let height_m = 0.055;
+        let robot_entity = child_of
+            .iter_ancestors(entity)
+            .find(|ancestor| robots.get(*ancestor).is_ok());
+        let (owner_center, logical_up) = if let Some(robot_entity) = robot_entity {
+            let Ok((_, robot_transform, _)) = robots.get(robot_entity) else {
+                continue;
+            };
+            let logical_rotation = find_chassis_descendant(robot_entity, children, chassis)
+                .and_then(|chassis_entity| chassis.get(chassis_entity).ok())
+                .map(|(_, state)| {
+                    robot_transform.rotation()
+                        * Quat::from_euler(EulerRot::YXZ, state.yaw, state.pitch, state.roll)
+                })
+                .unwrap_or_else(|| robot_transform.rotation());
+            (robot_transform.translation(), logical_rotation * Vec3::Y)
+        } else {
+            // 前哨站等固定目标不带 Infantry/InfantryChassis。其旋转机构保持世界竖直，
+            // 使用层级最上层实体作为外法向参考中心，并以 Bevy 世界 +Y 作为物理向上。
+            let owner = child_of.iter_ancestors(entity).last().unwrap_or(entity);
+            let Ok(owner_transform) = global_transforms.get(owner) else {
+                continue;
+            };
+            (owner_transform.translation(), Vec3::Y)
+        };
+        let Some(left_strip) =
+            armor_vertex_geometry(armor_parts, Side::Left, logical_up, armor_vertices)
+        else {
+            continue;
+        };
+        let Some(right_strip) =
+            armor_vertex_geometry(armor_parts, Side::Right, logical_up, armor_vertices)
+        else {
+            continue;
+        };
+
+        // CENTER/BASE 节点可能带有不同的 GLB 建模轴修正。使用显式的左右灯条身份
+        // 确定 x，并从灯条点云的上下端中心确定 y，从而保留装甲实际安装 roll。
+        // 逻辑底盘向上只判断端点身份，不直接代替装甲 y 轴。
+        let mut x_world = right_strip.center - left_strip.center;
+        if x_world.length_squared() < 1.0e-8 {
+            continue;
+        }
+        x_world = x_world.normalize();
+        let mut right_axis = right_strip.axis;
+        if right_axis.dot(left_strip.axis) < 0.0 {
+            right_axis = -right_axis;
+        }
+        let mut y_world = left_strip.axis.normalize() + right_axis.normalize();
+        y_world -= x_world * y_world.dot(x_world);
+        if y_world.length_squared() < 1.0e-8 {
+            continue;
+        }
+        y_world = y_world.normalize();
+        if y_world.dot(logical_up) < 0.0 {
+            y_world = -y_world;
+        }
+        let mut z_world = x_world.cross(y_world).normalize();
+        let center_world = center_transform.translation();
+        let outward_hint = center_world - owner_center;
+        if z_world.dot(outward_hint) < 0.0 {
+            // 某些资产的 VERTEX_L/R 命名以背面观察方向定义；协议统一按装甲正面观察方向。
+            x_world = -x_world;
+            z_world = x_world.cross(y_world).normalize();
+        }
+        y_world = z_world.cross(x_world).normalize();
+        let world_t_armor = transform_from_axes(
+            to_ros_translation(center_world),
+            to_ros_translation(x_world),
+            to_ros_translation(y_world),
+            to_ros_translation(z_world),
+        );
+        let corners_world_bevy = [
+            center_world - x_world * width_m * 0.5 + y_world * height_m * 0.5,
+            center_world + x_world * width_m * 0.5 + y_world * height_m * 0.5,
+            center_world + x_world * width_m * 0.5 - y_world * height_m * 0.5,
+            center_world - x_world * width_m * 0.5 - y_world * height_m * 0.5,
+        ];
+        let corners_world = corners_world_bevy.map(|point| to_ros_translation(point).to_array());
+        let index = batch.armor_count as usize;
+        batch.armors[index] = GroundTruthArmor {
+            id: (entity.to_bits() << 8) ^ armor_root.id.as_usize() as u64,
+            team: match armor_root.team {
+                Team::Red => 0,
+                Team::Blue => 1,
+            },
+            label: armor_root.label as u8,
+            armor_type,
+            width_m,
+            height_m,
+            world_t_armor,
+            corners_world,
             ..default()
         };
-        batch.projection_probe_count += 1;
+        batch.armor_count += 1;
     }
     batch
+}
+
+struct ArmorVertexGeometry {
+    center: Vec3,
+    axis: Vec3,
+}
+
+fn armor_vertex_geometry(
+    parts: &ArmorParts,
+    side: Side,
+    up_hint: Vec3,
+    vertices: &Query<(&GlobalTransform, &VertexData)>,
+) -> Option<ArmorVertexGeometry> {
+    let (transform, data) = vertices.get(parts.vertex(side)).ok()?;
+    if data.side != side || data.points.is_empty() {
+        return None;
+    }
+    let world_points = data
+        .points
+        .iter()
+        .map(|point| transform.transform_point(*point))
+        .collect::<Vec<_>>();
+    let up = up_hint.normalize();
+    let mut min_projection = f32::INFINITY;
+    let mut max_projection = f32::NEG_INFINITY;
+    for point in &world_points {
+        let projection = point.dot(up);
+        min_projection = min_projection.min(projection);
+        max_projection = max_projection.max(projection);
+    }
+    let span = max_projection - min_projection;
+    if !span.is_finite() || span < 1.0e-4 {
+        return None;
+    }
+
+    // VERTEX 网格包含灯条宽度和少量重复顶点。分别平均轴向两端 10% 的点，
+    // 得到端面中心，避免直接取单个极值角点给 roll 引入灯条宽度偏差。
+    let end_band = (span * 0.10).max(1.0e-4);
+    let mut top_sum = Vec3::ZERO;
+    let mut bottom_sum = Vec3::ZERO;
+    let mut top_count = 0usize;
+    let mut bottom_count = 0usize;
+    for point in world_points {
+        let projection = point.dot(up);
+        if projection >= max_projection - end_band {
+            top_sum += point;
+            top_count += 1;
+        }
+        if projection <= min_projection + end_band {
+            bottom_sum += point;
+            bottom_count += 1;
+        }
+    }
+    if top_count == 0 || bottom_count == 0 {
+        return None;
+    }
+    let top = top_sum / top_count as f32;
+    let bottom = bottom_sum / bottom_count as f32;
+    let axis = top - bottom;
+    if axis.length_squared() < 1.0e-8 {
+        return None;
+    }
+    Some(ArmorVertexGeometry {
+        center: (top + bottom) * 0.5,
+        axis,
+    })
 }
 
 fn find_chassis_descendant(
