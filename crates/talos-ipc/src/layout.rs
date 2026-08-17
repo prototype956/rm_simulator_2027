@@ -278,7 +278,17 @@ pub struct CapturedFrameMeta {
     pub height: u32,
     pub buffer_id: u8,
     pub format: u8,
-    pub _pad1: [u8; 30],
+    pub _pad1: [u8; 6],
+    pub gimbal_consumed_command_timestamp_ns: u64,
+    pub gimbal_yaw_velocity_rad_s: f32,
+    pub gimbal_pitch_velocity_rad_s: f32,
+    pub gimbal_yaw_acceleration_rad_s2: f32,
+    pub gimbal_pitch_acceleration_rad_s2: f32,
+    pub gimbal_actuator_mode: u8,
+    pub gimbal_saturation_flags: u8,
+    pub gimbal_telemetry_valid: u8,
+    pub gimbal_command_valid: u8,
+    pub _pad1_tail: [u8; 4],
     pub camera_info: CameraInfo,
     pub world_t_gimbal: RigidTransformF32,
     pub gimbal_t_camera_optical: RigidTransformF32,
@@ -303,8 +313,21 @@ const _: () = assert!(size_of::<FrameTripleBuffer>() == 18496);
 #[derive(Debug, Clone, Copy)]
 pub struct RuntimeState {
     pub timestamp_ns: u64,
+    pub consumed_command_timestamp_ns: u64,
+    pub consumed_at_timestamp_ns: u64,
+    pub target_yaw_rad: f32,
+    pub target_pitch_rad: f32,
+    pub actual_yaw_rad: f32,
+    pub actual_pitch_rad: f32,
+    pub yaw_velocity_rad_s: f32,
+    pub pitch_velocity_rad_s: f32,
+    pub yaw_acceleration_rad_s2: f32,
+    pub pitch_acceleration_rad_s2: f32,
     pub following: u8,
-    pub _pad: [u8; 55],
+    pub actuator_mode: u8,
+    pub saturation_flags: u8,
+    pub command_valid: u8,
+    pub _pad: [u8; 4],
 }
 const _: () = assert!(size_of::<RuntimeState>() == 64);
 
@@ -312,8 +335,21 @@ impl Default for RuntimeState {
     fn default() -> Self {
         Self {
             timestamp_ns: 0,
+            consumed_command_timestamp_ns: 0,
+            consumed_at_timestamp_ns: 0,
+            target_yaw_rad: 0.0,
+            target_pitch_rad: 0.0,
+            actual_yaw_rad: 0.0,
+            actual_pitch_rad: 0.0,
+            yaw_velocity_rad_s: 0.0,
+            pitch_velocity_rad_s: 0.0,
+            yaw_acceleration_rad_s2: 0.0,
+            pitch_acceleration_rad_s2: 0.0,
             following: 0,
-            _pad: [0; 55],
+            actuator_mode: 0,
+            saturation_flags: 0,
+            command_valid: 0,
+            _pad: [0; 4],
         }
     }
 }

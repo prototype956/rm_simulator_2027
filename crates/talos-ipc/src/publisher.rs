@@ -123,7 +123,15 @@ impl ShmPublisher {
     pub fn publish_runtime_state(&mut self, state: RuntimeState) {
         unsafe {
             let meta = self.meta_region.as_mut::<ShmMetaRegion>();
-            meta.runtime_state = state;
+            let timestamp = state.timestamp_ns;
+            let timestamp_ptr = std::ptr::addr_of_mut!(meta.runtime_state.timestamp_ns);
+            std::sync::atomic::AtomicU64::from_ptr(timestamp_ptr).store(0, Ordering::Release);
+            let mut pending = state;
+            pending.timestamp_ns = 0;
+            std::ptr::write_volatile(std::ptr::addr_of_mut!(meta.runtime_state), pending);
+            std::sync::atomic::fence(Ordering::Release);
+            std::sync::atomic::AtomicU64::from_ptr(timestamp_ptr)
+                .store(timestamp, Ordering::Release);
         }
     }
 

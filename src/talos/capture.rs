@@ -11,6 +11,7 @@ use crate::components::{
 };
 use crate::robomaster::prelude::{ArmorParts, ArmorRoot, ArmorSpec, Side, Team, VertexData};
 use crate::systems::{ChassisObservationFrame, GameplaySystems};
+use crate::talos::gimbal_actuator::GimbalActuatorTelemetry;
 use crate::talos::plugin::{to_ros_quat, to_ros_translation};
 use bevy::ecs::world::DeferredWorld;
 use bevy::prelude::*;
@@ -49,6 +50,7 @@ struct CapturedPoseData {
     world_t_gimbal: RigidTransformF32,
     gimbal_t_camera_optical: RigidTransformF32,
     gimbal_t_muzzle: RigidTransformF32,
+    actuator: GimbalActuatorTelemetry,
     chassis_observation: ChassisObservation,
     ground_truth: GroundTruthBatch,
 }
@@ -127,6 +129,18 @@ impl SnapshotAsync for TalosSnapshot {
             let metadata = CapturedFrameMeta {
                 frame_seq: self.frame_seq,
                 capture_timestamp_ns: self.timestamp_ns,
+                gimbal_consumed_command_timestamp_ns: self
+                    .pose
+                    .actuator
+                    .consumed_command_timestamp_ns,
+                gimbal_yaw_velocity_rad_s: self.pose.actuator.yaw_velocity_rad_s,
+                gimbal_pitch_velocity_rad_s: self.pose.actuator.pitch_velocity_rad_s,
+                gimbal_yaw_acceleration_rad_s2: self.pose.actuator.yaw_acceleration_rad_s2,
+                gimbal_pitch_acceleration_rad_s2: self.pose.actuator.pitch_acceleration_rad_s2,
+                gimbal_actuator_mode: self.pose.actuator.mode,
+                gimbal_saturation_flags: self.pose.actuator.saturation_flags,
+                gimbal_telemetry_valid: u8::from(self.pose.actuator.valid),
+                gimbal_command_valid: u8::from(self.pose.actuator.command_valid),
                 camera_info,
                 world_t_gimbal: self.pose.world_t_gimbal,
                 gimbal_t_camera_optical: self.pose.gimbal_t_camera_optical,
@@ -182,6 +196,7 @@ pub fn publish_talos_runtime_state_system(
     context: Option<Res<TalosCaptureContext>>,
     frame_stamp: Res<TalosFrameStamp>,
     following: Res<SubscribeAutoAim>,
+    actuator: Res<GimbalActuatorTelemetry>,
 ) {
     let Some(ctx) = context else {
         return;
@@ -190,8 +205,21 @@ pub fn publish_talos_runtime_state_system(
     if let Ok(mut publisher) = ctx.publisher.lock() {
         publisher.publish_runtime_state(RuntimeState {
             timestamp_ns: frame_stamp.timestamp_ns,
+            consumed_command_timestamp_ns: actuator.consumed_command_timestamp_ns,
+            consumed_at_timestamp_ns: actuator.consumed_at_timestamp_ns,
+            target_yaw_rad: actuator.target_yaw_rad,
+            target_pitch_rad: actuator.target_pitch_rad,
+            actual_yaw_rad: actuator.actual_yaw_rad,
+            actual_pitch_rad: actuator.actual_pitch_rad,
+            yaw_velocity_rad_s: actuator.yaw_velocity_rad_s,
+            pitch_velocity_rad_s: actuator.pitch_velocity_rad_s,
+            yaw_acceleration_rad_s2: actuator.yaw_acceleration_rad_s2,
+            pitch_acceleration_rad_s2: actuator.pitch_acceleration_rad_s2,
             following: u8::from(following.load(Ordering::Acquire)),
-            _pad: [0; 55],
+            actuator_mode: actuator.mode,
+            saturation_flags: actuator.saturation_flags,
+            command_valid: u8::from(actuator.command_valid),
+            _pad: [0; 4],
         });
     }
 }
@@ -251,6 +279,7 @@ fn extract_pose_data(
         Query<(&GlobalTransform, &Transform), (With<InfantryLaunchOffset>, With<Controlled>)>,
     >,
     chassis_obs: Extract<Res<ChassisObservationFrame>>,
+    actuator: Extract<Res<GimbalActuatorTelemetry>>,
     calibration: Extract<Res<TalosCameraCalibration>>,
     robots: Extract<Query<(Entity, &GlobalTransform, &Infantry)>>,
     chassis: Extract<Query<(&GlobalTransform, &InfantryChassis)>>,
@@ -285,6 +314,7 @@ fn extract_pose_data(
         gimbal_transform,
         muzzle_global,
         muzzle_local,
+        **actuator,
         &chassis_obs,
         calibration.0,
         &robots,
@@ -306,6 +336,7 @@ fn captured_pose_data(
     gimbal_transform: &GlobalTransform,
     muzzle_global: &GlobalTransform,
     muzzle_local: &Transform,
+    actuator: GimbalActuatorTelemetry,
     chassis_obs: &ChassisObservationFrame,
     camera_info: CameraInfo,
     robots: &Query<(Entity, &GlobalTransform, &Infantry)>,
@@ -357,6 +388,7 @@ fn captured_pose_data(
         world_t_gimbal,
         gimbal_t_camera_optical,
         gimbal_t_muzzle,
+        actuator,
         chassis_observation: ChassisObservation {
             frame_seq,
             timestamp_ns,

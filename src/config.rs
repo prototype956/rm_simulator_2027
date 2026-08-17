@@ -21,11 +21,55 @@ pub struct SimulationConfig {
     #[serde(default)]
     pub livox_ros: LivoxRosConfig,
     pub physics: PhysicsConfig,
+    #[serde(default)]
+    pub gimbal_actuator: GimbalActuatorConfig,
     pub vehicle: VehicleConfig,
     #[serde(default)]
     pub mecanum: MecanumConfig,
     pub projectile: ProjectileConfig,
     pub camera: CameraConfig,
+}
+
+#[derive(Deserialize, Reflect, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GimbalActuatorMode {
+    #[default]
+    Physical,
+    Ideal,
+}
+
+#[derive(Deserialize, Reflect, Clone)]
+#[serde(default)]
+pub struct GimbalActuatorConfig {
+    pub mode: GimbalActuatorMode,
+    pub command_poll_hz: f64,
+    pub integration_hz: f64,
+    pub command_delay_s: f64,
+    pub command_timeout_s: f64,
+    pub natural_frequency_rad_s: f64,
+    pub damping_ratio: f64,
+    pub yaw_max_velocity_rad_s: f64,
+    pub pitch_max_velocity_rad_s: f64,
+    pub yaw_max_acceleration_rad_s2: f64,
+    pub pitch_max_acceleration_rad_s2: f64,
+}
+
+impl Default for GimbalActuatorConfig {
+    fn default() -> Self {
+        Self {
+            mode: GimbalActuatorMode::Physical,
+            command_poll_hz: 1000.0,
+            integration_hz: 1000.0,
+            command_delay_s: 0.015,
+            command_timeout_s: 0.100,
+            natural_frequency_rad_s: 60.0,
+            damping_ratio: 1.0,
+            yaw_max_velocity_rad_s: 3.0,
+            pitch_max_velocity_rad_s: 3.0,
+            yaw_max_acceleration_rad_s2: 50.0,
+            pitch_max_acceleration_rad_s2: 100.0,
+        }
+    }
 }
 
 #[derive(Deserialize, Reflect, Clone)]
@@ -303,6 +347,7 @@ impl Default for SimulationConfig {
                 capture: CapturePipelineConfig::default(),
                 livox_ros: LivoxRosConfig::default(),
                 physics: PhysicsConfig::default(),
+                gimbal_actuator: GimbalActuatorConfig::default(),
                 vehicle: VehicleConfig::default(),
                 mecanum: MecanumConfig::default(),
                 projectile: ProjectileConfig {

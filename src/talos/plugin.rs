@@ -1,22 +1,17 @@
 use crate::capture::driver::{CaptureConfig, CapturedFrameKind};
-use crate::components::{
-    Controlled, InfantryChassis, InfantryGimbal, InfantryLaunchOffset, SubscribeAutoAim,
-};
 use crate::config::SimulationConfig;
-use crate::systems::projectile_launch;
 use crate::talos::capture::{
     TalosCaptureContext, TalosCapturePlugin, TalosFrameStamp, advance_talos_frame_stamp,
     publish_talos_runtime_state_system,
 };
-use bevy::ecs::system::RunSystemOnce;
+use crate::talos::gimbal_actuator::{
+    GimbalActuator, GimbalActuatorTelemetry, spawn_command_receiver, update_gimbal_actuator,
+};
 use bevy::prelude::*;
 use bevy::render::render_resource::TextureFormat;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use talos_ipc::*;
-
-#[derive(Resource)]
-pub struct ShmSubscriberRes(pub Arc<Mutex<ShmSubscriber>>);
 
 #[derive(Resource, Deref, DerefMut)]
 pub struct TalosEnabled(pub AtomicBool);
@@ -83,71 +78,42 @@ impl Plugin for TalosPlugin {
             context: capture_context,
         });
 
-        match ShmSubscriber::connect() {
+        app.init_resource::<GimbalActuator>()
+            .init_resource::<GimbalActuatorTelemetry>();
+        let receiver_connected = match ShmSubscriber::connect() {
             Ok(subscriber) => {
                 info!("connected to talos-cpp");
-                app.insert_resource(ShmSubscriberRes(Arc::new(Mutex::new(subscriber))));
+                let config = SimulationConfig::default();
+                let (inbox, worker) =
+                    spawn_command_receiver(subscriber, config.gimbal_actuator.command_poll_hz);
+                app.insert_resource(inbox)
+                    .insert_resource(worker)
+                    .add_systems(
+                        PostUpdate,
+                        update_gimbal_actuator.before(TransformSystems::Propagate),
+                    );
+                true
             }
             Err(_) => {
                 info!("could not connect to talos-cpp");
+                false
             }
-        }
+        };
 
         app.insert_resource(TalosEnabled(AtomicBool::new(true)));
         app.add_systems(Last, (advance_talos_frame_stamp, heartbeat_system));
-        app.add_systems(
-            Last,
-            publish_talos_runtime_state_system.after(advance_talos_frame_stamp),
-        );
-        app.add_systems(
-            Last,
-            process_subscription
-                .run_if(|enabled: Res<SubscribeAutoAim>| enabled.load(Ordering::Acquire)),
-        );
+        if receiver_connected {
+            app.add_systems(
+                Last,
+                publish_talos_runtime_state_system.after(advance_talos_frame_stamp),
+            );
+        } else {
+            app.add_systems(
+                Last,
+                publish_talos_runtime_state_system.after(advance_talos_frame_stamp),
+            );
+        }
     }
-}
-
-fn process_subscription(
-    context: Option<Res<ShmSubscriberRes>>,
-    mut commands: Commands,
-    gimbal: Single<
-        (&mut Transform, &mut InfantryGimbal),
-        (
-            With<Controlled>,
-            Without<InfantryChassis>,
-            Without<InfantryLaunchOffset>,
-        ),
-    >,
-    muzzle_offset: Single<
-        (&GlobalTransform, &Transform),
-        (With<InfantryLaunchOffset>, With<Controlled>),
-    >,
-) {
-    let Some(ctx) = context else {
-        return;
-    };
-    let (mut gimbal_transform, mut gimbal_data) = gimbal.into_inner();
-
-    let Some(cmd) = recv_gimbal_cmd(&ctx) else {
-        return;
-    };
-    if cmd.distance_m == -1.0 {
-        return;
-    }
-    if cmd.fire_advice == 1 {
-        commands.queue(|w: &mut World| {
-            w.run_system_once(projectile_launch).unwrap();
-        });
-    }
-    let yaw_f32 = (cmd.yaw_deg).to_radians();
-    let pitch_f32 = (-cmd.pitch_deg - 90.0).to_radians();
-    gimbal_data.local_yaw = yaw_f32;
-    gimbal_data.pitch = pitch_f32;
-    let expected_rotation = Quat::from_euler(EulerRot::YXZ, yaw_f32, pitch_f32, 0.0);
-    let current_rotation = muzzle_offset.0.rotation();
-    let delta = expected_rotation * current_rotation.inverse();
-    gimbal_transform.rotation = delta * gimbal_transform.rotation;
-    //info!("yaw={} pitch={}", cmd.yaw_deg, cmd.pitch_deg);
 }
 
 fn heartbeat_system(context: Option<Res<TalosCaptureContext>>) {
@@ -156,10 +122,6 @@ fn heartbeat_system(context: Option<Res<TalosCaptureContext>>) {
             publisher.update_heartbeat();
         }
     }
-}
-
-pub fn recv_gimbal_cmd(subscriber: &ShmSubscriberRes) -> Option<GimbalCmd> {
-    subscriber.0.lock().ok()?.recv_gimbal_cmd()
 }
 
 pub const M_ALIGN_MAT3: Mat3 = Mat3::from_cols(
