@@ -1,5 +1,14 @@
 # Bevy RoboMaster Simulator Configuration
 
+# RMUL 2026 3V3 V1.2.0, pp. 18-20. Applied at startup, not to existing robots on hot reload.
+# Presets: infantry_health_cooling, infantry_health_burst,
+#          infantry_power_cooling, infantry_power_burst, sentry
+# Sentry reuses the existing vehicle model/dynamics; the hero dummy is a 350 HP target only.
+# Module 1 initializes independent state only; heat, allowance and damage are not enforced yet.
+[combat]
+controlled = "infantry_health_cooling"
+target = "infantry_health_cooling"
+
 [window]
 # Rendering present mode. Frame rate is independently limited by max_fps below.
 # Options: auto_vsync, auto_no_vsync, fifo, fifo_relaxed, mailbox, immediate

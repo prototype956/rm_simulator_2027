@@ -13,10 +13,11 @@ use crate::components::{
 };
 use crate::config::SimulationConfig;
 use crate::metalfx::MetalFxTemporalUpscaling;
-use crate::robomaster::prelude::{
-    HERO_ROBOT_CONFIG, INFANTRY_THREE_CONFIG, OutpostRoot, PowerRuneRoot, ScanArmor, Team,
-    TechCoreRoot,
+use crate::robomaster::combat::{
+    CONTROLLED_ROBOT_ID, CombatRobotBundle, HERO_TARGET_ID, RobotIdentity, RobotMember,
+    TARGET_ROBOT_ID,
 };
+use crate::robomaster::prelude::{OutpostRoot, PowerRuneRoot, ScanArmor, Team, TechCoreRoot};
 use crate::robomaster::vehicle::movement::VehicleDynamic;
 use crate::systems::spawn_text;
 use crate::util::entity_query::HierarchyQuery;
@@ -147,21 +148,21 @@ pub fn setup(
     commands.spawn((
         WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("vehicle.glb"))),
         Transform::from_xyz(0.0, 1.0, 0.0),
-        Infantry::new(Team::Red, INFANTRY_THREE_CONFIG),
+        CombatRobotBundle::training(CONTROLLED_ROBOT_ID, Team::Red, config.combat.controlled),
         Controlled,
     ));
 
     commands.spawn((
         WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("vehicle.glb"))),
         Transform::from_xyz(1.0, 1.0, 1.0),
-        Infantry::new(Team::Blue, INFANTRY_THREE_CONFIG),
+        CombatRobotBundle::training(TARGET_ROBOT_ID, Team::Blue, config.combat.target),
         SlapperInfantry,
     ));
 
     commands.spawn((
         WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("HERO.glb"))),
         Transform::from_xyz(2.0, 1.0, 1.0),
-        Infantry::new(Team::Blue, HERO_ROBOT_CONFIG),
+        CombatRobotBundle::hero_target(HERO_TARGET_ID, Team::Blue),
         SlapperInfantry,
         ActiveSlapper,
     ));
@@ -262,6 +263,7 @@ pub fn setup_vehicle(
     root_query: Query<(
         Entity,
         &Infantry,
+        &RobotIdentity,
         Option<&Controlled>,
         Option<&ActiveSlapper>,
     )>,
@@ -273,7 +275,16 @@ pub fn setup_vehicle(
     if root_query.get(root).is_err() {
         return;
     }
-    let (root, infantry, is_local, is_active) = root_query.get(root).unwrap();
+    let (root, infantry, identity, is_local, is_active) = root_query.get(root).unwrap();
+    // Imported asset nodes already exist at WorldInstanceReady. Ownership is attached before
+    // ScanArmor constructs armor roots, and does not depend on mutable sticker selections.
+    let member = RobotMember {
+        root,
+        id: identity.id,
+    };
+    query.children.iter_descendants(root).for_each(|entity| {
+        commands.entity(entity).insert(member);
+    });
     let team = infantry.team;
     let config = infantry.config;
     let is_local = is_local.is_some();

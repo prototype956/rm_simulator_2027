@@ -1,3 +1,4 @@
+use crate::robomaster::combat::CombatConfig;
 use avian3d::prelude::SubstepCount;
 use bevy::prelude::*;
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -8,6 +9,8 @@ use std::path::Path;
 #[derive(Resource, Deserialize, Reflect, Clone)]
 #[reflect(Resource)]
 pub struct SimulationConfig {
+    #[serde(default)]
+    pub combat: CombatConfig,
     #[serde(default)]
     pub window: WindowConfig,
     #[serde(default)]
@@ -340,6 +343,7 @@ impl Default for SimulationConfig {
         Self::load().unwrap_or_else(|e| {
             warn!("Failed to load config.toml: {}, using defaults", e);
             Self {
+                combat: CombatConfig::default(),
                 window: WindowConfig::default(),
                 debug: DebugConfig::default(),
                 preview: PreviewConfig::default(),
@@ -436,6 +440,11 @@ fn config_hot_reload(
         if event.kind.is_modify() {
             match SimulationConfig::load() {
                 Ok(new_config) => {
+                    if new_config.combat != config.combat {
+                        info!(
+                            "Combat preset changes are staged; existing robots keep their startup rules until scene reinitialization"
+                        );
+                    }
                     info!("Config reloaded successfully");
                     if let Some(substeps) = substeps.as_deref_mut() {
                         substeps.0 = new_config.physics.substep_count;
