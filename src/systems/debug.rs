@@ -13,11 +13,13 @@ fn create_help_text(
     controller: &ControllerState,
 ) -> Text {
     format!(
-        "auto-aim={} total={} accurate={} pct={:.2}\ncontroller={} mode={} gyro={} remote-gyro={}\n{}",
+        "auto-aim={} bullets={} armor-hits={} hit-rate={:.2} rune-hits={} darts={}\ncontroller={} mode={} gyro={} remote-gyro={}\n{}",
         if auto_aim { "ON " } else { "OFF" },
-        stats.launch_count,
-        stats.accurate_count,
-        stats.accurate_pct(),
+        stats.bullet_launch_count,
+        stats.armor_hit_count,
+        stats.armor_hit_rate(),
+        stats.rune_hit_count,
+        stats.dart_launch_count,
         controller.help_source(),
         controller.help_mode(),
         if controller.controlled_chassis_spin() {

@@ -10,6 +10,7 @@ use crate::components::{
     Controlled, Infantry, InfantryChassis, InfantryGimbal, InfantryLaunchOffset, SubscribeAutoAim,
 };
 use crate::robomaster::prelude::{ArmorParts, ArmorRoot, ArmorSpec, Side, Team, VertexData};
+use crate::statistic::ProjectileStatistics;
 use crate::systems::{ChassisObservationFrame, GameplaySystems};
 use crate::talos::gimbal_actuator::GimbalActuatorTelemetry;
 use crate::talos::plugin::{to_ros_quat, to_ros_translation};
@@ -51,6 +52,7 @@ struct CapturedPoseData {
     gimbal_t_camera_optical: RigidTransformF32,
     gimbal_t_muzzle: RigidTransformF32,
     actuator: GimbalActuatorTelemetry,
+    projectile_statistics: ProjectileStatisticsMeta,
     chassis_observation: ChassisObservation,
     ground_truth: GroundTruthBatch,
 }
@@ -145,6 +147,7 @@ impl SnapshotAsync for TalosSnapshot {
                 world_t_gimbal: self.pose.world_t_gimbal,
                 gimbal_t_camera_optical: self.pose.gimbal_t_camera_optical,
                 gimbal_t_muzzle: self.pose.gimbal_t_muzzle,
+                projectile_statistics: self.pose.projectile_statistics,
                 chassis_observation: self.pose.chassis_observation,
                 ground_truth: self.pose.ground_truth,
                 ..default()
@@ -279,7 +282,10 @@ fn extract_pose_data(
         Query<(&GlobalTransform, &Transform), (With<InfantryLaunchOffset>, With<Controlled>)>,
     >,
     chassis_obs: Extract<Res<ChassisObservationFrame>>,
-    actuator: Extract<Res<GimbalActuatorTelemetry>>,
+    telemetry: (
+        Extract<Res<GimbalActuatorTelemetry>>,
+        Extract<Res<ProjectileStatistics>>,
+    ),
     calibration: Extract<Res<TalosCameraCalibration>>,
     robots: Extract<Query<(Entity, &GlobalTransform, &Infantry)>>,
     chassis: Extract<Query<(&GlobalTransform, &InfantryChassis)>>,
@@ -314,7 +320,8 @@ fn extract_pose_data(
         gimbal_transform,
         muzzle_global,
         muzzle_local,
-        **actuator,
+        **telemetry.0,
+        &telemetry.1,
         &chassis_obs,
         calibration.0,
         &robots,
@@ -337,6 +344,7 @@ fn captured_pose_data(
     muzzle_global: &GlobalTransform,
     muzzle_local: &Transform,
     actuator: GimbalActuatorTelemetry,
+    projectile_statistics: &ProjectileStatistics,
     chassis_obs: &ChassisObservationFrame,
     camera_info: CameraInfo,
     robots: &Query<(Entity, &GlobalTransform, &Infantry)>,
@@ -389,6 +397,13 @@ fn captured_pose_data(
         gimbal_t_camera_optical,
         gimbal_t_muzzle,
         actuator,
+        projectile_statistics: ProjectileStatisticsMeta {
+            timestamp_ns,
+            bullet_launch_count: projectile_statistics.bullet_launch_count,
+            armor_hit_count: projectile_statistics.armor_hit_count,
+            rune_hit_count: projectile_statistics.rune_hit_count,
+            dart_launch_count: projectile_statistics.dart_launch_count,
+        },
         chassis_observation: ChassisObservation {
             frame_seq,
             timestamp_ns,

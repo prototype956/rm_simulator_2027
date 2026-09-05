@@ -2,7 +2,7 @@ use crate::components::{
     Controlled, InfantryChassis, InfantryGimbal, InfantryLaunchOffset, SubscribeAutoAim,
 };
 use crate::config::{GimbalActuatorConfig, GimbalActuatorMode, SimulationConfig};
-use crate::systems::projectile_launch;
+use crate::systems::talos_projectile_launch;
 use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 use std::collections::VecDeque;
@@ -560,9 +560,11 @@ pub fn update_gimbal_actuator(
     actuator.advance_interval(cursor, now, actuator_config, pitch_limit, &mut flags);
     actuator.last_update = now;
 
-    for _ in 0..fire_rising_edges {
-        commands.queue(|world: &mut World| {
-            world.run_system_once(projectile_launch).unwrap();
+    if fire_rising_edges > 0 {
+        commands.queue(move |world: &mut World| {
+            world
+                .run_system_once_with(talos_projectile_launch, fire_rising_edges)
+                .unwrap();
         });
     }
 

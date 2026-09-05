@@ -4,8 +4,8 @@ pub const IMAGE_WIDTH: u32 = 1440;
 pub const IMAGE_HEIGHT: u32 = 1080;
 
 pub const CACHE_LINE_SIZE: usize = 64;
-pub const SHM_MAGIC: u32 = 0x54414C05;
-pub const SHM_VERSION: u32 = 5;
+pub const SHM_MAGIC: u32 = 0x54414C06;
+pub const SHM_VERSION: u32 = 6;
 
 pub const IMAGE_CHANNELS: u32 = 3;
 pub const IMAGE_SIZE: usize = (IMAGE_WIDTH * IMAGE_HEIGHT * IMAGE_CHANNELS) as usize;
@@ -59,6 +59,21 @@ pub struct RigidTransformF32 {
     pub _pad: [u8; 4],
 }
 const _: () = assert!(size_of::<RigidTransformF32>() == 32);
+
+/// Projectile counters sampled with the captured image.
+///
+/// This structure occupies the 32-byte reserved area from Talos IPC v5, so
+/// upgrading to v6 does not change `CapturedFrameMeta` or shared-memory sizes.
+#[repr(C, align(32))]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProjectileStatisticsMeta {
+    pub timestamp_ns: u64,
+    pub bullet_launch_count: u64,
+    pub armor_hit_count: u64,
+    pub rune_hit_count: u32,
+    pub dart_launch_count: u32,
+}
+const _: () = assert!(size_of::<ProjectileStatisticsMeta>() == 32);
 
 #[repr(C, align(32))]
 #[derive(Debug, Clone, Copy, Default)]
@@ -293,11 +308,14 @@ pub struct CapturedFrameMeta {
     pub world_t_gimbal: RigidTransformF32,
     pub gimbal_t_camera_optical: RigidTransformF32,
     pub gimbal_t_muzzle: RigidTransformF32,
-    pub _pad2: [u8; 32],
+    pub projectile_statistics: ProjectileStatisticsMeta,
     pub chassis_observation: ChassisObservation,
     pub ground_truth: GroundTruthBatch,
 }
 const _: () = assert!(size_of::<CapturedFrameMeta>() == 6144);
+const _: () = assert!(std::mem::offset_of!(CapturedFrameMeta, projectile_statistics) == 288);
+const _: () = assert!(std::mem::offset_of!(CapturedFrameMeta, chassis_observation) == 320);
+const _: () = assert!(std::mem::offset_of!(CapturedFrameMeta, ground_truth) == 448);
 
 #[repr(C, align(64))]
 pub struct FrameTripleBuffer {
