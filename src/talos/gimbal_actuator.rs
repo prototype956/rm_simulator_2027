@@ -2,8 +2,8 @@ use crate::components::{
     Controlled, InfantryChassis, InfantryGimbal, InfantryLaunchOffset, SubscribeAutoAim,
 };
 use crate::config::{GimbalActuatorConfig, GimbalActuatorMode, SimulationConfig};
-use crate::systems::talos_projectile_launch;
-use bevy::ecs::system::RunSystemOnce;
+use crate::robomaster::combat::shooting::{FireSource, request_fire};
+use crate::robomaster::combat::{LifeStatus, RobotCombatState, RobotMember};
 use bevy::prelude::*;
 use std::collections::VecDeque;
 use std::f64::consts::{FRAC_PI_2, PI};
@@ -177,6 +177,8 @@ pub struct GimbalActuator {
     active: Option<ActiveCommand>,
     pending: VecDeque<DelayedCommand>,
     fire_level: bool,
+    accept_after: Instant,
+    min_command_timestamp_ns: u64,
 }
 
 impl Default for GimbalActuator {
@@ -191,6 +193,8 @@ impl Default for GimbalActuator {
             active: None,
             pending: VecDeque::new(),
             fire_level: false,
+            accept_after: Instant::now(),
+            min_command_timestamp_ns: 0,
         }
     }
 }
@@ -213,6 +217,49 @@ pub struct GimbalActuatorTelemetry {
     pub saturation_flags: u8,
     pub command_valid: bool,
     pub dropped_commands: u64,
+}
+
+/// Called synchronously on the controlled robot's death. The receiver may keep polling,
+/// but update_gimbal_actuator discards all subsequent commands while life is Dead.
+pub(crate) fn clear_dead_robot_commands(world: &mut World) {
+    if let Some(inbox) = world.get_resource::<GimbalCommandInbox>() {
+        inbox.clear();
+    }
+    if let Some(mut actuator) = world.get_resource_mut::<GimbalActuator>() {
+        let (yaw, pitch) = (actuator.yaw.angle, actuator.pitch.angle);
+        actuator.reset_from_pose(yaw, pitch, Instant::now());
+        actuator.was_enabled = false;
+    }
+    if let Some(mut telemetry) = world.get_resource_mut::<GimbalActuatorTelemetry>() {
+        telemetry.command_valid = false;
+        telemetry.consumed_command_timestamp_ns = 0;
+        telemetry.yaw_velocity_rad_s = 0.0;
+        telemetry.pitch_velocity_rad_s = 0.0;
+        telemetry.yaw_acceleration_rad_s2 = 0.0;
+        telemetry.pitch_acceleration_rad_s2 = 0.0;
+    }
+}
+
+/// Reset command integration to the newly restored physical pose on the next update.
+pub(crate) fn reset_scene_commands(world: &mut World) {
+    clear_dead_robot_commands(world);
+    if let Some(mut actuator) = world.get_resource_mut::<GimbalActuator>() {
+        *actuator = default();
+    }
+    if let Some(mut telemetry) = world.get_resource_mut::<GimbalActuatorTelemetry>() {
+        *telemetry = default();
+    }
+}
+
+/// Stops are always safe; a valid target must originate from an image in this round.
+fn command_round_is_current(command: &GimbalCmd, round: u64) -> bool {
+    command.distance_m < 0.0
+        || (command.source_round_id == round && command.source_capture_timestamp_ns != 0)
+}
+
+fn command_is_fresh(event: &ReceivedCommand, actuator: &GimbalActuator) -> bool {
+    event.received_at > actuator.accept_after
+        && event.command.timestamp_ns > actuator.min_command_timestamp_ns
 }
 
 fn system_now_ns() -> u64 {
@@ -415,6 +462,7 @@ pub fn update_gimbal_actuator(
     config: Res<SimulationConfig>,
     following: Res<SubscribeAutoAim>,
     inbox: Res<GimbalCommandInbox>,
+    round: Res<crate::robomaster::combat::reset::TrainingRound>,
     mut actuator: ResMut<GimbalActuator>,
     mut telemetry: ResMut<GimbalActuatorTelemetry>,
     gimbal_entity: Single<
@@ -426,7 +474,8 @@ pub fn update_gimbal_actuator(
             Without<InfantryLaunchOffset>,
         ),
     >,
-    muzzle_entity: Single<Entity, (With<InfantryLaunchOffset>, With<Controlled>)>,
+    muzzle_entity: Single<(Entity, &RobotMember), (With<InfantryLaunchOffset>, With<Controlled>)>,
+    robots: Query<&RobotCombatState>,
     mut pose: ParamSet<(
         TransformHelper,
         Query<
@@ -440,13 +489,17 @@ pub fn update_gimbal_actuator(
     )>,
 ) {
     let now = Instant::now();
-    let enabled = following.load(Ordering::Acquire);
+    let alive = robots
+        .get(muzzle_entity.1.root)
+        .is_ok_and(|state| state.life.status == LifeStatus::Alive);
+    let enabled = alive && following.load(Ordering::Acquire);
     let actuator_config = &config.gimbal_actuator;
     let pitch_limit = config.vehicle.gimbal_pitch_limit.max(0.01) as f64;
     inbox.set_poll_hz(actuator_config.command_poll_hz);
 
     let gimbal_entity = *gimbal_entity;
-    let muzzle_entity = *muzzle_entity;
+    let robot_id = muzzle_entity.1.id;
+    let muzzle_entity = muzzle_entity.0;
     let (current_gimbal_rotation, current_muzzle_rotation) = {
         let helper = pose.p0();
         let Ok(gimbal_global) = helper.compute_global_transform(gimbal_entity) else {
@@ -492,6 +545,9 @@ pub fn update_gimbal_actuator(
     if !actuator.was_enabled || !actuator.initialized {
         actuator.reset_from_pose(actual_yaw, actual_pitch, now);
         actuator.was_enabled = true;
+        actuator.accept_after = now;
+        actuator.min_command_timestamp_ns = system_now_ns();
+        inbox.clear();
     }
 
     if actuator.mode != actuator_config.mode {
@@ -511,6 +567,11 @@ pub fn update_gimbal_actuator(
 
     let delay = Duration::from_secs_f64(actuator_config.command_delay_s.clamp(0.0, 1.0));
     for event in inbox.drain() {
+        if !command_is_fresh(&event, &actuator)
+            || !command_round_is_current(&event.command, round.id)
+        {
+            continue;
+        }
         actuator.pending.push_back(DelayedCommand {
             command: event.command,
             activate_at: event.received_at + delay,
@@ -530,7 +591,6 @@ pub fn update_gimbal_actuator(
         cursor = now - MAX_CATCH_UP;
         flags |= SATURATION_INTEGRATION_OVERRUN;
     }
-    let mut fire_rising_edges = 0_u32;
     while actuator
         .pending
         .front()
@@ -552,21 +612,16 @@ pub fn update_gimbal_actuator(
         active.activated_system_ns = event.activate_system_ns;
         let fire = active.valid && event.command.fire_advice == 1;
         if fire && !actuator.fire_level {
-            fire_rising_edges += 1;
+            let source = FireSource::Talos {
+                command_timestamp_ns: event.command.timestamp_ns,
+            };
+            commands.queue(move |world: &mut World| request_fire(world, robot_id, source));
         }
         actuator.fire_level = fire;
         actuator.active = Some(active);
     }
     actuator.advance_interval(cursor, now, actuator_config, pitch_limit, &mut flags);
     actuator.last_update = now;
-
-    if fire_rising_edges > 0 {
-        commands.queue(move |world: &mut World| {
-            world
-                .run_system_once_with(talos_projectile_launch, fire_rising_edges)
-                .unwrap();
-        });
-    }
 
     // The actuator state is absolute in the world frame. Convert the desired muzzle rotation to
     // the gimbal's local frame explicitly; a world-space delta cannot be left-multiplied onto a
@@ -622,4 +677,94 @@ pub fn update_gimbal_actuator(
         command_valid,
         dropped_commands: inbox.dropped(),
     };
+}
+
+#[cfg(test)]
+mod death_tests {
+    use super::*;
+
+    #[test]
+    fn death_clears_received_delayed_and_active_commands() {
+        let now = Instant::now();
+        let command = GimbalCmd {
+            fire_advice: 1,
+            ..default()
+        };
+        let inbox = GimbalCommandInbox {
+            queue: Arc::new(Mutex::new(VecDeque::from([ReceivedCommand {
+                command,
+                received_at: now,
+                received_system_ns: 1,
+            }]))),
+            dropped: Arc::new(AtomicU64::new(0)),
+            poll_hz_bits: Arc::new(AtomicU64::new(1000.0_f64.to_bits())),
+        };
+        let mut actuator = GimbalActuator::default();
+        actuator.reset_from_pose(0.5, 0.2, now);
+        actuator.was_enabled = true;
+        actuator.yaw.velocity = 2.0;
+        actuator.fire_level = true;
+        actuator.active = Some(command_target(command, 1.0));
+        actuator.pending.push_back(DelayedCommand {
+            command,
+            activate_at: now + Duration::from_secs(1),
+            activate_system_ns: 1,
+        });
+        let mut world = World::new();
+        world.insert_resource(inbox.clone());
+        world.insert_resource(actuator);
+        world.insert_resource(GimbalActuatorTelemetry {
+            command_valid: true,
+            yaw_velocity_rad_s: 2.0,
+            ..default()
+        });
+        clear_dead_robot_commands(&mut world);
+        assert!(inbox.queue.lock().unwrap().is_empty());
+        let actuator = world.resource::<GimbalActuator>();
+        assert!(actuator.pending.is_empty() && actuator.active.is_none());
+        assert!(!actuator.was_enabled && !actuator.fire_level);
+        assert_eq!((actuator.yaw.angle, actuator.pitch.angle), (0.5, 0.2));
+        assert_eq!(actuator.yaw.velocity, 0.0);
+        assert!(!world.resource::<GimbalActuatorTelemetry>().command_valid);
+    }
+    #[test]
+    fn source_epoch_rejects_newly_generated_commands_from_old_images() {
+        let mut command = GimbalCmd {
+            distance_m: 3.0,
+            timestamp_ns: 999,
+            source_round_id: 1,
+            source_capture_timestamp_ns: 1,
+            ..default()
+        };
+        assert!(!command_round_is_current(&command, 2));
+        command.source_round_id = 2;
+        assert!(command_round_is_current(&command, 2));
+        command.source_capture_timestamp_ns = 0;
+        assert!(!command_round_is_current(&command, 2));
+        command.distance_m = -1.0;
+        assert!(command_round_is_current(&command, 2));
+    }
+
+    #[test]
+    fn reenable_rejects_received_and_delayed_old_commands() {
+        let now = Instant::now();
+        let actuator = GimbalActuator {
+            accept_after: now,
+            min_command_timestamp_ns: 100,
+            ..default()
+        };
+        let mut event = ReceivedCommand {
+            command: GimbalCmd {
+                timestamp_ns: 101,
+                ..default()
+            },
+            received_at: now,
+            received_system_ns: 102,
+        };
+        assert!(!command_is_fresh(&event, &actuator));
+        event.received_at = now + Duration::from_millis(1);
+        assert!(command_is_fresh(&event, &actuator));
+        event.command.timestamp_ns = 99;
+        assert!(!command_is_fresh(&event, &actuator));
+    }
 }

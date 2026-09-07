@@ -7,4 +7,5 @@ mod capture;
 mod gimbal_actuator;
 mod plugin;
 
+pub(crate) use gimbal_actuator::{clear_dead_robot_commands, reset_scene_commands};
 pub use plugin::TalosPlugin;

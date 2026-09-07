@@ -148,14 +148,18 @@ pub fn setup(
     commands.spawn((
         WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("vehicle.glb"))),
         Transform::from_xyz(0.0, 1.0, 0.0),
-        CombatRobotBundle::training(CONTROLLED_ROBOT_ID, Team::Red, config.combat.controlled),
+        CombatRobotBundle::training(CONTROLLED_ROBOT_ID, Team::Red, config.combat.controlled)
+            .with_allowance(config.combat.controlled_allowance)
+            .with_shooter_config(&config.projectile),
         Controlled,
     ));
 
     commands.spawn((
         WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("vehicle.glb"))),
         Transform::from_xyz(1.0, 1.0, 1.0),
-        CombatRobotBundle::training(TARGET_ROBOT_ID, Team::Blue, config.combat.target),
+        CombatRobotBundle::training(TARGET_ROBOT_ID, Team::Blue, config.combat.target)
+            .with_allowance(config.combat.target_allowance)
+            .with_shooter_config(&config.projectile),
         SlapperInfantry,
     ));
 
@@ -301,7 +305,7 @@ pub fn setup_vehicle(
             }
         });
     }
-    let vehicle_body_collision_layers = GameLayer::vehicle_body_collision_layers(is_local);
+    let vehicle_body_collision_layers = GameLayer::vehicle_motion_collision_layers(is_local);
     let vehicle_armor_collision_layers = GameLayer::vehicle_armor_collision_layers(is_local);
 
     commands.entity(root).insert((
@@ -323,6 +327,19 @@ pub fn setup_vehicle(
         AngularDamping(50.0),
     ));
 
+    // The original support cylinder (radius 0.2593615 m) encloses some armor whose GLB
+    // mounting radii are 0.204–0.277 m. Do not use that broad proxy for bullet blocking.
+    // This 0.17 m inner core is a training geometry approximation, not an RM rule value.
+    commands.spawn((
+        Name::new("CombatBodyCore"),
+        ChildOf(root),
+        member,
+        Transform::from_xyz(0.0, -0.115649, 0.0),
+        Collider::cylinder(0.17, 0.231298),
+        ColliderDensity(0.0),
+        GameLayer::vehicle_body_collision_layers(is_local),
+    ));
+
     query.children.iter_descendants(root).for_each(|e| {
         commands.entity(e).insert(vehicle_armor_collision_layers);
     });
@@ -335,15 +352,19 @@ pub fn setup_vehicle(
     ));
     let gimbal = iter.exact("GIMBAL").one().unwrap();
     commands.entity(gimbal).insert(InfantryGimbal::default());
+    // Every available barrel belongs to its robot; only the controlled camera is special.
+    let q = query.of(gimbal).flatten();
+    if let Some(muzzle) = q.clone().exact("SHOT_DIRECTION").one() {
+        commands.entity(muzzle).insert(InfantryLaunchOffset);
+    }
     if is_local {
-        let q = query.of(gimbal).flatten();
-        commands
-            .entity(q.clone().exact("SHOT_DIRECTION").one().unwrap())
-            .insert(InfantryLaunchOffset);
         commands
             .entity(q.exact("CAM_DIRECTION").one().unwrap())
             .insert(InfantryViewOffset);
     }
+    commands.queue(move |world: &mut World| {
+        crate::robomaster::combat::reset::capture_initial_robot(world, root)
+    });
 }
 
 pub fn setup_collision(

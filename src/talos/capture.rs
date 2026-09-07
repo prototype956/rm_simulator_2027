@@ -9,6 +9,8 @@ use crate::capture::{
 use crate::components::{
     Controlled, Infantry, InfantryChassis, InfantryGimbal, InfantryLaunchOffset, SubscribeAutoAim,
 };
+use crate::robomaster::combat::RobotIdentity;
+use crate::robomaster::combat::reset::{RoundFence, TrainingRound};
 use crate::robomaster::prelude::{ArmorParts, ArmorRoot, ArmorSpec, Side, Team, VertexData};
 use crate::statistic::ProjectileStatistics;
 use crate::systems::{ChassisObservationFrame, GameplaySystems};
@@ -42,6 +44,8 @@ pub struct ExtractedPoseData {
     pub timestamp_ns: u64,
     pose: Option<CapturedPoseData>,
     pub valid: bool,
+    round_id: u64,
+    fence: Option<RoundFence>,
 }
 
 /// Pose data captured at frame snapshot time
@@ -55,6 +59,7 @@ struct CapturedPoseData {
     projectile_statistics: ProjectileStatisticsMeta,
     chassis_observation: ChassisObservation,
     ground_truth: GroundTruthBatch,
+    combat: CombatFrameMeta,
 }
 
 #[derive(Resource, Debug, Clone, Copy)]
@@ -68,6 +73,8 @@ fn now_ns() -> u64 {
 }
 
 struct TalosSnapshotSync {
+    round_id: u64,
+    fence: RoundFence,
     frame_seq: u64,
     timestamp_ns: u64,
     pose: CapturedPoseData,
@@ -82,6 +89,8 @@ impl SnapshotSync for TalosSnapshotSync {
         let ctx = world.resource::<TalosCaptureContextShared>().0.clone();
 
         Box::new(TalosSnapshot {
+            round_id: self.round_id,
+            fence: self.fence,
             ctx,
             frame_seq: self.frame_seq,
             timestamp_ns: self.timestamp_ns,
@@ -93,6 +102,8 @@ impl SnapshotSync for TalosSnapshotSync {
 }
 
 struct TalosSnapshot {
+    round_id: u64,
+    fence: RoundFence,
     ctx: Arc<Mutex<ShmPublisher>>,
     frame_seq: u64,
     timestamp_ns: u64,
@@ -125,6 +136,13 @@ impl SnapshotAsync for TalosSnapshot {
             return;
         }
 
+        let Some(_generation) = self.fence.lock_round(self.round_id) else {
+            debug!(
+                "discard old capture round={} frame={}",
+                self.round_id, self.frame_seq
+            );
+            return;
+        };
         if let Ok(mut publisher) = self.ctx.lock() {
             let mut camera_info = self.pose.camera_info;
             camera_info.timestamp_ns = self.timestamp_ns;
@@ -150,9 +168,15 @@ impl SnapshotAsync for TalosSnapshot {
                 projectile_statistics: self.pose.projectile_statistics,
                 chassis_observation: self.pose.chassis_observation,
                 ground_truth: self.pose.ground_truth,
+                combat: self.pose.combat,
                 ..default()
             };
-            let _ = publisher.try_publish_frame(frame.data, metadata);
+            if publisher.try_publish_frame(frame.data, metadata) {
+                debug!(
+                    "round frame round={} frame={} timestamp_ns={}",
+                    self.round_id, self.frame_seq, self.timestamp_ns
+                );
+            }
         }
     }
 }
@@ -174,6 +198,8 @@ impl GpuCaptureHandler for TalosSnapshotCreator {
         let pose = extracted.pose.clone()?;
 
         Some(Box::new(TalosSnapshotSync {
+            round_id: extracted.round_id,
+            fence: extracted.fence.clone()?,
             frame_seq: extracted.frame_seq,
             timestamp_ns: extracted.timestamp_ns,
             pose,
@@ -275,7 +301,11 @@ impl Plugin for TalosCapturePlugin {
 /// Extract pose data from MainApp to RenderApp
 fn extract_pose_data(
     mut pose_data: ResMut<ExtractedPoseData>,
-    frame_stamp: Extract<Res<TalosFrameStamp>>,
+    stamps: (
+        Extract<Res<TalosFrameStamp>>,
+        Extract<Res<TrainingRound>>,
+        Extract<Res<RoundFence>>,
+    ),
     camera: Extract<Query<&GlobalTransform, With<CaptureSource>>>,
     gimbal: Extract<Query<&GlobalTransform, (With<Controlled>, With<InfantryGimbal>)>>,
     muzzle_offset: Extract<
@@ -285,9 +315,10 @@ fn extract_pose_data(
     telemetry: (
         Extract<Res<GimbalActuatorTelemetry>>,
         Extract<Res<ProjectileStatistics>>,
+        Extract<Res<crate::robomaster::combat::telemetry::CombatTelemetry>>,
     ),
     calibration: Extract<Res<TalosCameraCalibration>>,
-    robots: Extract<Query<(Entity, &GlobalTransform, &Infantry)>>,
+    robots: Extract<Query<(Entity, &GlobalTransform, &Infantry, Option<&RobotIdentity>)>>,
     chassis: Extract<Query<(&GlobalTransform, &InfantryChassis)>>,
     armor_roots: Extract<Query<(Entity, &ArmorRoot, &ArmorParts)>>,
     armor_vertices: Extract<Query<(&GlobalTransform, &VertexData)>>,
@@ -296,6 +327,9 @@ fn extract_pose_data(
     names: Extract<Query<&Name>>,
     global_transforms: Extract<Query<&GlobalTransform>>,
 ) {
+    let (frame_stamp, round, fence) = stamps;
+    pose_data.round_id = round.id;
+    pose_data.fence = Some(fence.clone());
     pose_data.frame_seq = frame_stamp.frame_seq;
     pose_data.timestamp_ns = frame_stamp.timestamp_ns;
 
@@ -335,6 +369,7 @@ fn extract_pose_data(
         pose_data.frame_seq,
         pose_data.timestamp_ns,
     ));
+    pose_data.pose.as_mut().unwrap().combat = telemetry.2.frame;
     pose_data.valid = true;
 }
 
@@ -347,7 +382,7 @@ fn captured_pose_data(
     projectile_statistics: &ProjectileStatistics,
     chassis_obs: &ChassisObservationFrame,
     camera_info: CameraInfo,
-    robots: &Query<(Entity, &GlobalTransform, &Infantry)>,
+    robots: &Query<(Entity, &GlobalTransform, &Infantry, Option<&RobotIdentity>)>,
     chassis: &Query<(&GlobalTransform, &InfantryChassis)>,
     armor_roots: &Query<(Entity, &ArmorRoot, &ArmorParts)>,
     armor_vertices: &Query<(&GlobalTransform, &VertexData)>,
@@ -392,6 +427,7 @@ fn captured_pose_data(
     debug_assert!(transform_near(recomposed_camera, world_t_camera, 1.0e-4));
 
     CapturedPoseData {
+        combat: default(),
         camera_info,
         world_t_gimbal,
         gimbal_t_camera_optical,
@@ -505,7 +541,7 @@ fn transform_near(left: RigidTransformF32, right: RigidTransformF32, tolerance: 
 }
 
 fn capture_ground_truth(
-    robots: &Query<(Entity, &GlobalTransform, &Infantry)>,
+    robots: &Query<(Entity, &GlobalTransform, &Infantry, Option<&RobotIdentity>)>,
     chassis: &Query<(&GlobalTransform, &InfantryChassis)>,
     armor_roots: &Query<(Entity, &ArmorRoot, &ArmorParts)>,
     armor_vertices: &Query<(&GlobalTransform, &VertexData)>,
@@ -522,7 +558,7 @@ fn capture_ground_truth(
         ..default()
     };
 
-    for (entity, transform, infantry) in robots.iter() {
+    for (entity, transform, infantry, identity) in robots.iter() {
         if batch.target_count as usize >= GROUND_TRUTH_MAX_TARGETS {
             break;
         }
@@ -541,7 +577,7 @@ fn capture_ground_truth(
         batch.targets[index] = GroundTruthTarget {
             frame_seq,
             timestamp_ns,
-            id: entity.to_bits(),
+            id: identity.map_or(entity.to_bits() | (1 << 63), |id| id.id.0),
             team: match infantry.team {
                 Team::Red => 0,
                 Team::Blue => 1,
@@ -574,7 +610,7 @@ fn capture_ground_truth(
             .iter_ancestors(entity)
             .find(|ancestor| robots.get(*ancestor).is_ok());
         let (owner_center, logical_up) = if let Some(robot_entity) = robot_entity {
-            let Ok((_, robot_transform, _)) = robots.get(robot_entity) else {
+            let Ok((_, robot_transform, _, _)) = robots.get(robot_entity) else {
                 continue;
             };
             let logical_rotation = find_chassis_descendant(robot_entity, children, chassis)
@@ -651,6 +687,10 @@ fn capture_ground_truth(
         let index = batch.armor_count as usize;
         batch.armors[index] = GroundTruthArmor {
             id: (entity.to_bits() << 8) ^ armor_root.id.as_usize() as u64,
+            owner_robot_id: robot_entity
+                .and_then(|e| robots.get(e).ok())
+                .and_then(|(_, _, _, identity)| identity)
+                .map_or(0, |id| id.id.0),
             team: match armor_root.team {
                 Team::Red => 0,
                 Team::Blue => 1,

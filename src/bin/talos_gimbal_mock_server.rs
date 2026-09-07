@@ -159,6 +159,10 @@ fn publish_frame(
     };
     let metadata = CapturedFrameMeta {
         frame_seq,
+        combat: talos_ipc::CombatFrameMeta {
+            round_id: 1,
+            ..Default::default()
+        },
         capture_timestamp_ns: timestamp_ns,
         camera_info: default_camera_info(timestamp_ns),
         world_t_gimbal: RigidTransformF32 {

@@ -4,63 +4,12 @@ use bevy::prelude::*;
 use core::{f32::consts::PI, time::Duration};
 
 use crate::components::{
-    Controlled, DartLaunch, DartProjectile, DartSetting, GameLayer, Infantry, InfantryChassis,
-    InfantryGimbal, InfantryLaunchOffset, ProjectileCooldown, ProjectileLifetime,
-    ProjectileSetting,
+    DartLaunch, DartProjectile, DartSetting, GameLayer, ProjectileLifetime, ProjectileSetting,
 };
 use crate::config::SimulationConfig;
 use crate::robomaster::prelude::Projectile;
 use crate::statistic::ProjectileStatistics;
 use crate::systems::{ControllerState, request_controller_rumble};
-
-struct BulletSpawnPose<'a> {
-    infantry_transform: &'a Transform,
-    infantry_velocity: &'a LinearVelocity,
-    infantry_angular_velocity: &'a AngularVelocity,
-    gimbal_transform: &'a GlobalTransform,
-    launch_offset: &'a Transform,
-}
-
-fn spawn_bullets(
-    count: u32,
-    stats: &mut ProjectileStatistics,
-    config: &SimulationConfig,
-    commands: &mut Commands,
-    setting: &ProjectileSetting,
-    pose: BulletSpawnPose<'_>,
-) {
-    let direction = (pose.gimbal_transform.rotation() * pose.launch_offset.rotation)
-        .mul_vec3(Vec3::Y)
-        .normalize_or_zero();
-    if direction == Vec3::ZERO {
-        return;
-    }
-    let velocity = pose.infantry_velocity.0 + direction * config.projectile.speed;
-    let translation = pose.infantry_transform.translation
-        + (pose.gimbal_transform.rotation() * pose.launch_offset.translation);
-    for _ in 0..count {
-        stats.increase_bullet_launch();
-        commands.spawn((
-            RigidBody::Dynamic,
-            Collider::sphere(config.projectile.diameter / 2.0),
-            Mass(config.projectile.mass),
-            Friction::new(config.projectile.friction),
-            Restitution::new(0.3),
-            LinearDamping(config.projectile.linear_damping),
-            GameLayer::projectile_collision_layers(true),
-            Mesh3d(setting.0.clone()),
-            MeshMaterial3d(setting.1.clone()),
-            LinearVelocity(velocity),
-            AngularVelocity(pose.infantry_angular_velocity.0),
-            Transform::IDENTITY.with_translation(translation),
-            ProjectileLifetime(Timer::from_seconds(
-                config.projectile.lifetime,
-                TimerMode::Once,
-            )),
-            Projectile,
-        ));
-    }
-}
 
 pub fn setup_projectile(
     mut commands: Commands,
@@ -82,93 +31,6 @@ pub fn setup_projectile(
     commands.insert_resource(DartSetting(
         asset_server.load(GltfAssetLabel::Scene(0).from_asset("DART.glb")),
     ));
-}
-
-pub fn projectile_launch(
-    time: Res<Time>,
-    mut cooldown: ResMut<ProjectileCooldown>,
-    mut stats: ResMut<ProjectileStatistics>,
-    config: Res<SimulationConfig>,
-    _asset_server: Res<AssetServer>,
-    mut commands: Commands,
-    controller: Option<Res<ControllerState>>,
-    mut rumble_requests: MessageWriter<GamepadRumbleRequest>,
-    setting: Res<ProjectileSetting>,
-    infantry: Single<
-        (&Transform, &LinearVelocity, &AngularVelocity),
-        (With<Infantry>, With<Controlled>),
-    >,
-    gimbal: Single<
-        (&GlobalTransform, &InfantryGimbal),
-        (With<Controlled>, Without<InfantryChassis>),
-    >,
-    launch_offset: Single<&Transform, (With<Controlled>, With<InfantryLaunchOffset>)>,
-) {
-    cooldown.tick(time.delta());
-    if !cooldown.is_finished() {
-        return;
-    }
-    cooldown.reset();
-
-    spawn_bullets(
-        1,
-        &mut stats,
-        &config,
-        &mut commands,
-        &setting,
-        BulletSpawnPose {
-            infantry_transform: infantry.0,
-            infantry_velocity: infantry.1,
-            infantry_angular_velocity: infantry.2,
-            gimbal_transform: gimbal.0,
-            launch_offset: *launch_offset,
-        },
-    );
-    request_controller_rumble(
-        controller.as_deref(),
-        &mut rumble_requests,
-        GamepadRumbleIntensity {
-            strong_motor: 0.45,
-            weak_motor: 0.2,
-        },
-        Duration::from_millis(80),
-    );
-}
-
-/// Launch every rising edge already rate-limited by the Talos vision fire controller.
-pub fn talos_projectile_launch(
-    In(count): In<u32>,
-    resources: (
-        ResMut<ProjectileStatistics>,
-        Res<SimulationConfig>,
-        Res<ProjectileSetting>,
-    ),
-    mut commands: Commands,
-    infantry: Single<
-        (&Transform, &LinearVelocity, &AngularVelocity),
-        (With<Infantry>, With<Controlled>),
-    >,
-    gimbal: Single<
-        (&GlobalTransform, &InfantryGimbal),
-        (With<Controlled>, Without<InfantryChassis>),
-    >,
-    launch_offset: Single<&Transform, (With<Controlled>, With<InfantryLaunchOffset>)>,
-) {
-    let (mut stats, config, setting) = resources;
-    spawn_bullets(
-        count,
-        &mut stats,
-        &config,
-        &mut commands,
-        &setting,
-        BulletSpawnPose {
-            infantry_transform: infantry.0,
-            infantry_velocity: infantry.1,
-            infantry_angular_velocity: infantry.2,
-            gimbal_transform: gimbal.0,
-            launch_offset: *launch_offset,
-        },
-    );
 }
 
 pub fn projectile_aerodynamics(

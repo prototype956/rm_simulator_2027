@@ -12,6 +12,7 @@ pub enum ShmError {
     IoError(io::Error),
     MapFailed,
     InvalidSize,
+    ProtocolMismatch { actual: u32 },
 }
 
 impl std::fmt::Display for ShmError {
@@ -20,6 +21,12 @@ impl std::fmt::Display for ShmError {
             ShmError::IoError(e) => write!(f, "IO error: {}", e),
             ShmError::MapFailed => write!(f, "mmap failed"),
             ShmError::InvalidSize => write!(f, "invalid size"),
+            ShmError::ProtocolMismatch { actual } => write!(
+                f,
+                "Talos protocol mismatch: expected v{}, got v{}",
+                crate::SHM_VERSION,
+                actual
+            ),
         }
     }
 }

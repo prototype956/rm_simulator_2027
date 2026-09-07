@@ -1,8 +1,9 @@
 use avian3d::prelude::{CollisionEnd, CollisionEventsEnabled};
-use bevy::prelude::{ChildOf, Commands, Entity, Local, On, Plugin, Query, ResMut, With};
+use bevy::prelude::{ChildOf, Commands, Entity, Local, On, Plugin, Query, ResMut, With, Without};
 use std::collections::HashSet;
 
 use super::construct::Armor;
+use crate::robomaster::combat::shooting::ProjectileShot;
 use crate::robomaster::power_rune::prelude::Projectile;
 use crate::statistic::ProjectileStatistics;
 
@@ -11,7 +12,8 @@ fn handle_armor_collision(
     mut commands: Commands,
     mut stats: ResMut<ProjectileStatistics>,
     mut counted_projectiles: Local<HashSet<Entity>>,
-    projectiles: Query<Entity, With<Projectile>>,
+    // Legacy dart/non-17 mm hit counting only; combat owns first-contact 17 mm accounting.
+    projectiles: Query<Entity, (With<Projectile>, Without<ProjectileShot>)>,
     armors: Query<(), With<Armor>>,
     child_of: Query<&ChildOf>,
 ) {

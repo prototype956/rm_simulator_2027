@@ -20,8 +20,8 @@ impl ControllerHelp {
     const fn keyboard() -> Self {
         Self {
             source: "keyboard",
-            manual: "F3 Camera | WASD Move | Arrows Aim | Space Shoot | G Dart | Q Gyro | U Remote Gyro | F5 AutoAim | Tab Slapper",
-            auto_aim: "F5 AutoAim Off | WASD Move | Q Gyro | U Remote Gyro | external fire_advice shoots | Tab Slapper",
+            manual: "R Reset | F3 Camera | WASD Move | Arrows Aim | Space Shoot | G Dart | Q Gyro | U Remote Gyro | F5 AutoAim | Tab Slapper",
+            auto_aim: "R Reset | F5 AutoAim Off | WASD Move | Q Gyro | U Remote Gyro | external fire_advice shoots | Tab Slapper",
         }
     }
 
@@ -135,6 +135,7 @@ pub struct ControllerState {
     pub controlled: ControllerInput,
     pub remote: ControllerInput,
     keyboard_auto_aim: bool,
+    round_input_blocked: bool,
     controlled_chassis_spin: ChassisSpinMode,
     remote_chassis_spin: ChassisSpinMode,
     active_gamepad: Option<Entity>,
@@ -142,6 +143,24 @@ pub struct ControllerState {
 }
 
 impl ControllerState {
+    /// Reset latches; held triggers must be released before they can re-arm this round.
+    pub fn reset_round(&mut self) {
+        self.clear_robot_input(true);
+        self.clear_robot_input(false);
+        self.round_input_blocked = true;
+    }
+
+    /// Clear latched combat controls on death; camera and target-selection keys remain usable.
+    pub fn clear_robot_input(&mut self, controlled: bool) {
+        if controlled {
+            self.controlled = ControllerInput::default();
+            self.keyboard_auto_aim = false;
+            self.controlled_chassis_spin = ChassisSpinMode::Off;
+        } else {
+            self.remote = ControllerInput::default();
+            self.remote_chassis_spin = ChassisSpinMode::Off;
+        }
+    }
     pub fn reset_frame(&mut self) {
         self.controlled = ControllerInput::default();
         self.remote = ControllerInput::default();
@@ -353,8 +372,15 @@ pub fn sample_gamepad_controller(
 pub fn update_auto_aim_subscription(
     controller: Res<ControllerState>,
     enabled: Res<SubscribeAutoAim>,
+    robots: Query<
+        &crate::robomaster::combat::RobotCombatState,
+        With<crate::components::Controlled>,
+    >,
 ) {
-    let active = controller.auto_aim_active();
+    let alive = robots
+        .single()
+        .is_ok_and(|state| state.life.status == crate::robomaster::combat::LifeStatus::Alive);
+    let active = alive && controller.auto_aim_active();
     if enabled.swap(active, Ordering::AcqRel) != active {
         info!(
             "Auto-aim subscription is now {}.",
@@ -502,6 +528,23 @@ fn clamp_axes_vec2(input: Vec2) -> Vec2 {
     Vec2::new(input.x.clamp(-1.0, 1.0), input.y.clamp(-1.0, 1.0))
 }
 
+/// Run after device sampling so a held gamepad RT cannot undo the reset's control disable.
+pub fn enforce_round_input_release(
+    mut controller: ResMut<ControllerState>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+) {
+    if !controller.round_input_blocked {
+        return;
+    }
+    let released = !controller.controlled.shoot
+        && !controller.controlled.auto_aim
+        && !keyboard.pressed(KeyCode::F5)
+        && !keyboard.pressed(KeyCode::KeyR);
+    controller.clear_robot_input(true);
+    controller.clear_robot_input(false);
+    controller.round_input_blocked = !released;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -563,5 +606,25 @@ mod tests {
 
         assert!(controller.controlled_chassis_spin());
         assert!(controller.remote_chassis_spin());
+    }
+    #[test]
+    fn round_reset_requires_held_gamepad_trigger_to_be_released() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = World::new();
+        let mut controller = ControllerState::default();
+        controller.reset_round();
+        controller.controlled.auto_aim = true;
+        controller.controlled.shoot = true;
+        world.insert_resource(controller);
+        world.insert_resource(ButtonInput::<KeyCode>::default());
+        world.run_system_once(enforce_round_input_release).unwrap();
+        let controller = world.resource::<ControllerState>();
+        assert!(controller.round_input_blocked);
+        assert!(!controller.auto_aim_active() && !controller.controlled.shoot);
+        world.run_system_once(enforce_round_input_release).unwrap();
+        assert!(!world.resource::<ControllerState>().round_input_blocked);
+        world.resource_mut::<ControllerState>().controlled.auto_aim = true;
+        world.run_system_once(enforce_round_input_release).unwrap();
+        assert!(world.resource::<ControllerState>().auto_aim_active());
     }
 }

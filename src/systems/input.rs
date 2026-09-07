@@ -6,6 +6,7 @@ use crate::components::{
     SubscribeAutoAim,
 };
 use crate::config::SimulationConfig;
+use crate::robomaster::combat::damage::CombatDead;
 use crate::robomaster::vehicle::movement::VehicleDynamic;
 use crate::systems::ControllerState;
 use avian3d::prelude::*;
@@ -51,7 +52,10 @@ pub fn vehicle_controls(
     time: Res<Time>,
     controller: Res<ControllerState>,
     config: Res<SimulationConfig>,
-    infantry: Single<(Forces, &Mass, &mut VehicleDynamic), (With<Infantry>, With<Controlled>)>,
+    infantry: Single<
+        (Forces, &Mass, &mut VehicleDynamic),
+        (With<Infantry>, With<Controlled>, Without<CombatDead>),
+    >,
     gimbal: Single<
         (&GlobalTransform, &InfantryGimbal),
         (With<Controlled>, Without<InfantryChassis>),
@@ -101,7 +105,12 @@ pub fn remote_vehicle_controls(
     config: Res<SimulationConfig>,
     infantry: Single<
         (&GlobalTransform, Forces, &Mass, &mut VehicleDynamic),
-        (With<ActiveSlapper>, With<Infantry>, Without<Controlled>),
+        (
+            With<ActiveSlapper>,
+            With<Infantry>,
+            Without<Controlled>,
+            Without<CombatDead>,
+        ),
     >,
     chassis: Single<
         (&mut Transform, &mut InfantryChassis),
@@ -149,7 +158,11 @@ pub fn gimbal_controls(
     config: Res<SimulationConfig>,
     gimbal: Single<
         (&mut Transform, &mut InfantryGimbal),
-        (With<Controlled>, Without<InfantryChassis>),
+        (
+            With<Controlled>,
+            Without<InfantryChassis>,
+            Without<CombatDead>,
+        ),
     >,
 ) {
     if enabled.load(Ordering::Acquire) {
@@ -184,7 +197,11 @@ pub fn remote_gimbal_controls(
     config: Res<SimulationConfig>,
     gimbal: Single<
         (&mut Transform, &mut InfantryGimbal),
-        (With<ActiveSlapper>, Without<InfantryChassis>),
+        (
+            With<ActiveSlapper>,
+            Without<InfantryChassis>,
+            Without<CombatDead>,
+        ),
     >,
 ) {
     let dt = time.delta_secs();

@@ -1,12 +1,18 @@
 //! RMUL 2026 3V3 identity and per-robot state, independent of visual armor labels.
 //!
-//! Module 1 only initializes state. Shooting, heat accounting and damage still use the
-//! existing simulator paths until their respective modules are implemented.
+//! Identity, shooting, heat, allowance, damage and round reset share per-robot state.
 
 mod config;
+pub mod damage;
+mod heat;
+pub mod reset;
+pub mod shooting;
 mod state;
+#[cfg(feature = "talos")]
+pub mod telemetry;
 
 pub use config::*;
+pub use heat::HeatState;
 pub use state::*;
 
 use crate::components::Infantry;
@@ -31,6 +37,18 @@ pub struct CombatRobotBundle {
 }
 
 impl CombatRobotBundle {
+    pub fn with_allowance(mut self, config: AllowanceConfig) -> Self {
+        self.combat.allowance = config.initial_state();
+        info!(
+            "combat allowance robot={} state={:?}",
+            self.identity.id.0, self.combat.allowance
+        );
+        self
+    }
+    pub fn with_shooter_config(mut self, config: &crate::config::ProjectileConfig) -> Self {
+        self.combat.shooter.mechanics = ShooterMechanics::from_config(config);
+        self
+    }
     pub fn training(id: RobotId, team: Team, preset: TrainingPreset) -> Self {
         let (role, rules) = preset.resolve();
         let visual = match role {
@@ -60,17 +78,16 @@ impl CombatRobotBundle {
     ) -> Self {
         let state = RobotCombatState::new(rules);
         info!(
-            "combat robot={} team={:?} role={:?} hp={}/{} heat={}/{} cooling={}/s shooter={:?} allowance={:?}",
+            "combat robot={} team={:?} role={:?} hp={}/{} heat={}/{} cooling={}/s shooter={:?}",
             id.0,
             team,
             role,
             state.life.hp,
             rules.max_hp,
-            state.heat.current,
+            state.heat.current(),
             rules.heat_limit,
             rules.cooling_per_second,
             state.shooter.kind,
-            state.allowance,
         );
         Self {
             infantry: Infantry::new(team, visual),
@@ -84,8 +101,14 @@ pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
+        #[cfg(feature = "talos")]
+        app.init_resource::<telemetry::CombatTelemetry>()
+            .add_systems(FixedLast, telemetry::sample_combat);
         app.register_type::<RobotCombatState>()
             .register_type::<RobotMember>()
+            .add_plugins(shooting::ShootingPlugin)
+            .add_plugins(damage::DamagePlugin)
+            .add_plugins(reset::ResetPlugin)
             .add_systems(PostUpdate, report_armor_ownership);
     }
 }

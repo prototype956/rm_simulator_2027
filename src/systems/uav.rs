@@ -2,7 +2,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 
 use crate::components::{
-    Controlled, Infantry, InfantryChassis, InfantryGimbal, InfantryLaunchOffset, ProjectileCooldown,
+    Controlled, Infantry, InfantryChassis, InfantryGimbal, InfantryLaunchOffset,
 };
 
 pub fn uav_launch(

@@ -28,6 +28,23 @@ impl GameLayer {
     }
 
     pub fn vehicle_body_collision_layers(is_self: bool) -> CollisionLayers {
+        CollisionLayers::new(
+            if is_self {
+                Self::VehicleSelf
+            } else {
+                Self::VehicleOther
+            },
+            [if is_self {
+                Self::ProjectileOther
+            } else {
+                Self::ProjectileSelf
+            }],
+        )
+    }
+
+    /// Existing chassis support proxy is wider than the imported armor mounting radius.
+    /// Keep it for vehicle/ground dynamics; a separate inner body volume blocks projectiles.
+    pub fn vehicle_motion_collision_layers(is_self: bool) -> CollisionLayers {
         if is_self {
             CollisionLayers::new(
                 Self::VehicleSelf,
@@ -88,9 +105,6 @@ impl GameLayer {
 #[derive(Component, Deref, DerefMut)]
 pub struct ProjectileLifetime(pub Timer);
 
-#[derive(Resource, Deref, DerefMut)]
-pub struct ProjectileCooldown(pub Timer);
-
 #[derive(Resource)]
 pub struct ProjectileSetting(pub Handle<Mesh>, pub Handle<StandardMaterial>);
 
@@ -147,11 +161,11 @@ mod tests {
     }
 
     #[test]
-    fn projectiles_do_not_hit_vehicle_body_colliders() {
+    fn projectiles_hit_opposing_body_colliders_but_not_their_own() {
         let self_projectile = GameLayer::projectile_collision_layers(true);
         let other_projectile = GameLayer::projectile_collision_layers(false);
 
-        assert!(!self_projectile.interacts_with(GameLayer::vehicle_body_collision_layers(false)));
-        assert!(!other_projectile.interacts_with(GameLayer::vehicle_body_collision_layers(true)));
+        assert!(self_projectile.interacts_with(GameLayer::vehicle_body_collision_layers(false)));
+        assert!(other_projectile.interacts_with(GameLayer::vehicle_body_collision_layers(true)));
     }
 }

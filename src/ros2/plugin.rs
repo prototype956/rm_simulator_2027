@@ -5,15 +5,15 @@ use crate::components::{
     Controlled, InfantryChassis, InfantryGimbal, InfantryLaunchOffset, SubscribeAutoAim,
 };
 use crate::config::SimulationConfig;
+use crate::robomaster::combat::CONTROLLED_ROBOT_ID;
+use crate::robomaster::combat::shooting::{FireSource, request_fire};
 use crate::robomaster::prelude::{ArmorRoot, PowerRune, RuneIndex, TechCore, tech_core_state_json};
 use crate::ros2::capture::{RosCaptureContext, RosCapturePlugin};
 use crate::ros2::livox::{RosLivoxContext, RosLivoxPlugin};
 use crate::ros2::prelude::AverageRateLimiter;
 use crate::ros2::prelude::transform;
 use crate::ros2::topic::*;
-use crate::systems::projectile_launch;
 use crate::util::entity_query::HierarchyQuery;
-use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 use bevy::render::render_resource::TextureFormat;
 use r2r::ClockType::SystemTime;
@@ -285,6 +285,8 @@ fn process_subscription(
     mut commands: Commands,
     gimbal_cmd: ResMut<TopicSubscriber<GimbalCmdTopic>>,
     mut fire_rate_limiter: ResMut<FireRateLimiter>,
+    robots: Query<&crate::robomaster::combat::RobotCombatState, With<Controlled>>,
+    enabled: Res<SubscribeAutoAim>,
     gimbal: Single<
         (&mut Transform, &mut InfantryGimbal),
         (
@@ -304,13 +306,20 @@ fn process_subscription(
         let Ok(Some(cmd)) = gimbal_cmd.try_recv() else {
             return;
         };
+        if !enabled.load(Ordering::Acquire)
+            || !robots.single().is_ok_and(|state| {
+                state.life.status == crate::robomaster::combat::LifeStatus::Alive
+            })
+        {
+            continue;
+        }
         if cmd.distance == -1.0 {
             return;
         }
         if cmd.fire_advice {
             if fire_rate_limiter.allow() {
                 commands.queue(|w: &mut World| {
-                    w.run_system_once(projectile_launch).unwrap();
+                    request_fire(w, CONTROLLED_ROBOT_ID, FireSource::Ros2);
                 });
             }
         }
@@ -432,11 +441,7 @@ impl Plugin for ROS2Plugin {
                 },
             })
             .add_systems(Last, cleanup_ros2_system)
-            .add_systems(
-                Update,
-                process_subscription
-                    .run_if(|enabled: Res<SubscribeAutoAim>| enabled.load(Ordering::Acquire)),
-            )
+            .add_systems(Update, process_subscription)
             .add_systems(Update, capture_rune.after(TransformSystems::Propagate))
             .add_systems(Update, publish_tech_core_state)
             .insert_resource(SpinThreadHandle(Some(thread::spawn(move || {

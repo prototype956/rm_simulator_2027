@@ -7,7 +7,7 @@
 # Identity, shooting, heat, damage and R-key reset are active; finite/unlimited allowance is enforced.
 # 17mm: +10 heat/shot, cooling at 10 Hz; >limit locks until zero, >=limit+100 locks this round.
 [combat]
-controlled = "infantry_health_cooling"
+controlled = "infantry_health_burst"
 target = "infantry_health_cooling"
 # On R reset, print up to 1024 current-round event details in addition to the summary.
 event_details = false

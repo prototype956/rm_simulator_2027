@@ -1,5 +1,8 @@
+use super::HeatState;
+use super::shooting::PendingShot;
 use crate::robomaster::prelude::Team;
 use bevy::prelude::*;
+use std::time::Duration;
 
 #[derive(Reflect, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RobotId(pub u64);
@@ -38,8 +41,10 @@ pub enum ShooterKind {
 #[derive(Reflect, Clone, Copy, Debug)]
 pub struct RobotRules {
     pub max_hp: u32,
-    pub heat_limit: f64,
-    pub cooling_per_second: f64,
+    /// Upper limit in referee heat units; the presets specify integral values.
+    pub heat_limit: u32,
+    /// Referee heat units per second, applied in tenths at 10 Hz.
+    pub cooling_per_second: u32,
     pub shooter: ShooterKind,
 }
 
@@ -48,8 +53,8 @@ impl RobotRules {
     pub const fn hero_target() -> Self {
         Self {
             max_hp: 350,
-            heat_limit: 0.0,
-            cooling_per_second: 0.0,
+            heat_limit: 0,
+            cooling_per_second: 0,
             shooter: ShooterKind::None,
         }
     }
@@ -67,18 +72,57 @@ pub struct LifeState {
     pub status: LifeStatus,
 }
 
-/// Times are in simulation seconds; None means no shot has left the barrel this round.
+/// Per-robot physical evaluation totals; never supplied to the vision decision pipeline.
+#[derive(Reflect, Clone, Debug, Default)]
+pub struct DamageStatistics {
+    pub armor_contacts: u64,
+    pub damaging_hits: u64,
+    pub damage_dealt: u64,
+    pub damage_taken: u64,
+    pub kills: u64,
+}
+
+/// Durations use the Fixed simulation clock; None means no shot has left the barrel this round.
 #[derive(Reflect, Clone, Debug)]
 pub struct ShooterState {
     pub kind: ShooterKind,
-    pub last_shot_time_s: Option<f64>,
+    pub mechanics: ShooterMechanics,
+    pub last_shot_at: Option<Duration>,
+    pub last_manual_request_at: Option<Duration>,
+    pub pending: Option<PendingShot>,
+    pub actual_shots: u64,
+    pub rejected_requests: u64,
 }
 
-#[derive(Reflect, Clone, Debug, Default)]
-pub struct HeatState {
-    pub current: f64,
-    pub cooling_locked: bool,
-    pub round_locked: bool,
+/// Mechanical training parameters copied at spawn; these are not referee limits.
+#[derive(Reflect, Clone, Copy, Debug)]
+pub struct ShooterMechanics {
+    pub speed_mps: f32,
+    pub min_interval: Duration,
+    pub launch_delay: Duration,
+}
+
+impl Default for ShooterMechanics {
+    fn default() -> Self {
+        Self {
+            speed_mps: 25.0,
+            min_interval: Duration::from_millis(50),
+            launch_delay: Duration::ZERO,
+        }
+    }
+}
+
+impl ShooterMechanics {
+    pub fn from_config(config: &crate::config::ProjectileConfig) -> Self {
+        config
+            .validate_shooter()
+            .expect("invalid shooter configuration");
+        Self {
+            speed_mps: config.speed,
+            min_interval: Duration::from_secs_f64(config.cooldown),
+            launch_delay: Duration::from_secs_f64(config.launch_delay_s),
+        }
+    }
 }
 
 /// Referee allowance only, never the physical magazine capacity.
@@ -91,10 +135,11 @@ pub enum FireAllowance {
 }
 
 /// Owned values on each robot root: no shared mutable heat, allowance or life state.
-/// Module 1 initializes these fields; later modules connect them to gameplay.
+/// Shooting, heat, allowance and life accounting are active.
 #[derive(Component, Reflect, Clone, Debug)]
 #[reflect(Component)]
 pub struct RobotCombatState {
+    pub damage: DamageStatistics,
     pub rules: RobotRules,
     pub shooter: ShooterState,
     pub heat: HeatState,
@@ -105,12 +150,18 @@ pub struct RobotCombatState {
 impl RobotCombatState {
     pub fn new(rules: RobotRules) -> Self {
         Self {
+            damage: DamageStatistics::default(),
             rules,
             shooter: ShooterState {
                 kind: rules.shooter,
-                last_shot_time_s: None,
+                mechanics: ShooterMechanics::default(),
+                last_shot_at: None,
+                last_manual_request_at: None,
+                pending: None,
+                actual_shots: 0,
+                rejected_requests: 0,
             },
-            heat: HeatState::default(),
+            heat: HeatState::new(Duration::ZERO),
             allowance: FireAllowance::Unlimited,
             life: LifeState {
                 hp: rules.max_hp,
