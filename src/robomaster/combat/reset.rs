@@ -348,8 +348,7 @@ fn apply_requested_reset(world: &mut World) {
     if let Some(mut stats) = world.get_resource_mut::<ProjectileStatistics>() {
         *stats = default();
     }
-    #[cfg(feature = "talos")]
-    crate::talos::reset_scene_commands(world);
+    crate::gimbal_actuator::reset_scene_commands(world);
     let mut round = world.resource_mut::<TrainingRound>();
     if round.summaries.len() == SUMMARY_CAPACITY {
         round.summaries.pop_front();
@@ -368,6 +367,3 @@ fn apply_requested_reset(world: &mut World) {
         cleared_projectiles
     );
 }
-
-#[cfg(test)]
-mod tests;

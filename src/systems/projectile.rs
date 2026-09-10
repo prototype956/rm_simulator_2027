@@ -140,15 +140,20 @@ pub fn dart_launch(
     );
 }
 
-pub fn cleanup_projectiles(
-    time: Res<Time>,
-    mut commands: Commands,
-    mut projectiles: Query<(Entity, &mut ProjectileLifetime)>,
-) {
-    for (entity, mut lifetime) in &mut projectiles {
-        lifetime.tick(time.delta());
-        if lifetime.is_finished() {
-            commands.entity(entity).despawn();
-        }
+/// Physical time controls lifetime, independent of presentation update frequency.
+pub fn cleanup_projectiles(world: &mut World) {
+    let dt = world.resource::<Time<Fixed>>().delta();
+    let now = world.resource::<Time<Fixed>>().elapsed();
+    let expired: Vec<_> = world
+        .query::<(Entity, &mut ProjectileLifetime)>()
+        .iter_mut(world)
+        .filter_map(|(e, mut t)| {
+            t.tick(dt);
+            t.is_finished().then_some(e)
+        })
+        .collect();
+    for entity in expired {
+        crate::robomaster::combat::ledger::ended(world, entity, now, "lifetime");
+        world.despawn(entity);
     }
 }

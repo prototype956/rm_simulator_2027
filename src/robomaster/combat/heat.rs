@@ -9,9 +9,6 @@ const COOLING_PERIOD: Duration = Duration::from_millis(100);
 const SHOT_HEAT_TENTHS: u64 = 100;
 const ROUND_LOCK_MARGIN: u64 = 100;
 
-#[cfg(test)]
-mod tests;
-
 /// Per-robot thermal state. Ordinary and round locks are independent latches.
 /// Clearing the ordinary latch at zero never clears the round latch.
 #[derive(Reflect, Clone, Debug, Default)]

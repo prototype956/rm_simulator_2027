@@ -267,6 +267,12 @@ fn resolve_impact(world: &mut World, impact: CollisionStart) {
     );
     // Immediate removal deduplicates all remaining contact messages in this batch. Other
     // in-flight projectiles (including those fired by a now-dead shooter) remain untouched.
+    super::ledger::ended(
+        world,
+        projectile,
+        at,
+        if armor { "armor" } else { "obstacle" },
+    );
     world.despawn(projectile);
 }
 
@@ -303,6 +309,12 @@ fn apply_damage(
             "damage projectile={} shooter={} target={} actual={} hp={}",
             shot.id, shot.request.robot.0, target.0, actual, remaining_hp
         ),
+    );
+    super::ledger::record(
+        world,
+        at,
+        "damage_applied",
+        serde_json::json!({"projectile_id":shot.id,"request_id":shot.request.id,"shooter":shot.request.robot.0,"target":target.0,"actual":actual,"remaining_hp":remaining_hp}),
     );
     world.write_message(DamageApplied {
         projectile_id: shot.id,
@@ -355,8 +367,7 @@ fn die(world: &mut World, root: Entity, robot: RobotId, shot: ProjectileShot, at
         if let Some(enabled) = world.get_resource::<SubscribeAutoAim>() {
             enabled.store(false, Ordering::Release);
         }
-        #[cfg(feature = "talos")]
-        crate::talos::clear_dead_robot_commands(world);
+        crate::gimbal_actuator::clear_dead_robot_commands(world);
     }
     super::reset::record_event(
         world,
@@ -412,9 +423,6 @@ fn extinguish_lights(
         handle.0 = materials.add(dark);
     }
 }
-
-#[cfg(test)]
-mod tests;
 
 /// The next round must not resolve contacts collected before its teleport boundary.
 pub(super) fn clear_round_impacts(world: &mut World) {

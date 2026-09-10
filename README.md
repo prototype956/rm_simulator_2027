@@ -137,7 +137,71 @@ v7 元数据区为 74752 字节，双方必须同时升级，旧版本明确拒�
 保留碰撞与惯性，已出膛的弹丸继续有效。按 `R` 重置机器人位置、云台、生命、热量及本回合统计，清理在途弹丸并关闭外部控制；
 松开扳机后可重新射击，按 F5 可重新开启自动瞄准。没有自动复活。
 左下角显示回合编号与回合仿真时间，重置时日志输出按机器人汇总的射击、伤害、击毁和热量锁定。
-`combat.event_details = true` 可额外输出有界事件明细；三个验收配置见 `configs/phase1/`。
+`combat.event_details = true` 可额外输出有界事件明细。
+
+### 阶段二同步训练入口（实施中）
+
+`daedalus_training` 提供独立 Unix socket 的 Reset / Advance / EndWindow / Settle / Inspect / Close 协议。
+无窗口、无渲染设备、无 Talos 共享内存；复用原场地、车辆碰撞、执行器和战斗机制。
+当前支持真实场地出生校验、目标静止/正弦平移/匀速旋转、10 ms 控制步、1 ms 物理步及
+结构化请求/弹丸事件。红车在场地地面范围随机出生，蓝车在红车周围 2–8 m 范围随机出生，
+双方车体朝向由独立随机流生成。中心能量机关的模型和碰撞体在训练中恢复，保持静态未激活。
+默认云台朝向蓝车；显式指定的角度不自动修正。Reset 必须有至少一块蓝车装甲板正面朝向
+红车相机、四角都在画面内，且中心与四角射线均未被碰撞体遮挡，否则返回 invalid seed。
+此检查不受检测噪声、延迟或丢帧配置影响，measurements 关闭时也执行。
+响应使用 sampling_revision=3，旧 seed 的场景分布已改变；几何采样最多重试 64 次，
+可见性失败直接拒绝该 seed。完整参数及坐标约定见 [训练出生场景](docs/TRAINING_SCENARIOS.md)。
+Reset 返回独立 previous_round 截断摘要，保留旧回合待发命令、供弹请求、在途弹丸及资源状态；
+新回合状态和奖励归零。摘要只用于诊断，不伪造自然命中/未命中；重连重试不重复重置。
+战斗冷却时钟在最后一次初始化同步后随回合时间归零，首个冷却期限为 100 ms。
+供弹、有限/无限弹量及冷却/爆发普通热锁已通过本机物理进程验收。
+EndWindow 在当前边界停止接收新请求；已接收供弹及在途弹丸由 Settle 按 10 ms 继续自然结算。
+状态区分 running / complete / timed_out，超时保留未完成工作并由后续 Reset 摘要记录截断。
+默认 5 s 弹丸寿命的三场景结算与重放、重连重试及多实例隔离已通过本机验收。
+Reset 的可选 `scenario.measurements` 对象已接入 30 Hz 合成二维检测帧；默认关闭。
+配置字段为 `noise_std_px`（默认 0.25，[0,10]）、`latency_ms`（默认 20，[0,500]）、
+`dropout_probability`（默认 0，[0,1]）、`blackouts_ms`（默认空，最多 16 个毫秒半开区间）。
+30 Hz 期限向上取整到 1 ms 物理步；帧携带捕获时自身位姿/执行器反馈，按延迟交付，
+Inspect 不重复交付，Reset 清空旧延迟队列。`evaluation.visual_truth` 独立于检测帧。
+几何复用正式 Talos 的 GLB 装甲角点，遮挡采用环境/战斗碰撞体近似，排除根支撑圆柱和己方几何。
+配套 `rm_vision_rl/tools/phase2/vision` 直接编译真实 PnP/预测/控制模块，默认禁射。
+训练 Reset 支持可选 `scenario.target_hp`（整数 [1,1000000]），只覆盖目标最大/当前 HP；
+省略时恢复原目标预设，不继承上一回合覆盖。配套 EvaluationSession 使用 100000 HP 标准靶，
+在统一预热后显式开启默认 30 s 规则基线窗口，并独立按 `[start_ns,end_ns)` 内实际出膛
+弹丸关联最终伤害；物理伤害累计不改写，结算超时不发布正式成绩。
+详细协议、时钟和限制见配套项目 `docs/phase2_measurements.md` 与 `docs/phase2_evaluation.md`；
+完整阶段二验收尚未完成。
+
+```bash
+cargo run --offline --no-default-features --features training \
+    --bin daedalus_training -- --socket /tmp/rl-instance-1.sock
+```
+
+使用 `--config` / `--assets` 指定配置和资源目录。每个实例必须使用不同 socket 路径，
+已有路径会拒绝启动。客户端、协议说明和实际验收记录位于相邻训练项目的
+`tools/phase2/README.md`、`docs/phase2_design.md` 和 `docs/phase2_validation.md`。
+场景参数、坐标约定和合法性检查见 [训练出生场景](docs/TRAINING_SCENARIOS.md)。
+构建仍使用完整 Bevy 依赖；无渲染运行不等同于已完成 ARM64 或最小依赖适配。
+
+### 训练初始场景预览（可选）
+
+```bash
+cargo run --offline --no-default-features --features training \
+  --example training_preview -- --seed 17
+```
+
+预览通过真实训练后端的 Reset 取得出生位置和朝向，复用场地、车辆和装甲模型显示，
+画面冻结在回合初始状态，观察视角使用增强照明和红/蓝位置标记以便辨认车辆。
+红、蓝车位置和朝向均按 seed 生成，默认云台朝向蓝车，出生与可见性检查和训练一致。
+相同程序、配置、资源和 seed 可以重放同一初始状态；无效 seed 显示拒绝原因并隐藏旧车辆，
+避免把上一幅场景当作当前结果。窗口显示初始可见装甲板数量。
+
+`N` 下一个 seed，`B` 上一个，`R` 重放当前 seed，`C` 切换俯视/自身相机；
+方向键环绕视角，`PageUp` / `PageDown` 拉近/拉远。生成期间保留上一幅画面并显示加载状态。
+`--scenario FILE.json` 可传入 Reset 的 scenario 对象；`--config` / `--assets` 指定配置和资源。
+`--first-person` 直接使用红车相机视角；窗口比例与配置图像一致，便于核对初始视野。
+此入口仅预览初始状态，不推进目标运动或开火，也不连接 Talos；训练服务器保持无渲染。
+可选 `--screenshot /tmp/training-preview.png` 只保存一次加载后的窗口截图。
 
 ### 单 NUC 调试
 

@@ -5,10 +5,10 @@
 mod config;
 pub mod damage;
 mod heat;
+pub mod ledger;
 pub mod reset;
 pub mod shooting;
 mod state;
-#[cfg(feature = "talos")]
 pub mod telemetry;
 
 pub use config::*;
@@ -101,7 +101,6 @@ pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
-        #[cfg(feature = "talos")]
         app.init_resource::<telemetry::CombatTelemetry>()
             .add_systems(FixedLast, telemetry::sample_combat);
         app.register_type::<RobotCombatState>()

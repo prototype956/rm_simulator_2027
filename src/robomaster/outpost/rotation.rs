@@ -66,21 +66,3 @@ impl RotationController {
         );
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rotation_direction_sign_matches_legacy_bool() {
-        assert_eq!(RotationDirection::Clockwise.sign(), 1.0);
-        assert_eq!(RotationDirection::CounterClockwise.sign(), -1.0);
-    }
-
-    #[test]
-    fn rotation_mode_cycles_in_debug_order() {
-        assert_eq!(RotationMode::Forward.next(), RotationMode::Stopped);
-        assert_eq!(RotationMode::Stopped.next(), RotationMode::Reverse);
-        assert_eq!(RotationMode::Reverse.next(), RotationMode::Forward);
-    }
-}

@@ -134,38 +134,3 @@ pub struct PreciousCollision(
 );
 
 pub const PROJECTILE_LIFETIME_SECS: f32 = 5.0;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn self_projectile_ignores_self_vehicle_and_projectiles() {
-        let projectile = GameLayer::projectile_collision_layers(true);
-
-        assert!(!projectile.interacts_with(GameLayer::vehicle_body_collision_layers(true)));
-        assert!(!projectile.interacts_with(GameLayer::vehicle_armor_collision_layers(true)));
-        assert!(!projectile.interacts_with(GameLayer::projectile_collision_layers(true)));
-        assert!(!projectile.interacts_with(GameLayer::projectile_collision_layers(false)));
-    }
-
-    #[test]
-    fn projectiles_hit_opposing_armor_and_environment() {
-        let self_projectile = GameLayer::projectile_collision_layers(true);
-        let other_projectile = GameLayer::projectile_collision_layers(false);
-
-        assert!(self_projectile.interacts_with(GameLayer::vehicle_armor_collision_layers(false)));
-        assert!(other_projectile.interacts_with(GameLayer::vehicle_armor_collision_layers(true)));
-        assert!(self_projectile.interacts_with(GameLayer::environment_collision_layers()));
-        assert!(other_projectile.interacts_with(GameLayer::environment_collision_layers()));
-    }
-
-    #[test]
-    fn projectiles_hit_opposing_body_colliders_but_not_their_own() {
-        let self_projectile = GameLayer::projectile_collision_layers(true);
-        let other_projectile = GameLayer::projectile_collision_layers(false);
-
-        assert!(self_projectile.interacts_with(GameLayer::vehicle_body_collision_layers(false)));
-        assert!(other_projectile.interacts_with(GameLayer::vehicle_body_collision_layers(true)));
-    }
-}

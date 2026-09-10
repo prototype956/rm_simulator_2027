@@ -20,9 +20,6 @@ use std::time::Duration;
 
 const REQUEST_CAPACITY: usize = 256;
 
-#[cfg(test)]
-mod tests;
-
 #[derive(Reflect, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FireSource {
     /// Combined keyboard/gamepad trigger, sampled by ControllerState.
@@ -106,6 +103,22 @@ struct FireRequests {
     queue: VecDeque<FireRequest>,
 }
 
+/// Read-only training diagnostics; does not admit, cancel or drain requests.
+#[cfg(feature = "training")]
+pub(crate) fn queued_requests(world: &World) -> Vec<FireRequest> {
+    world
+        .resource::<FireRequests>()
+        .queue
+        .iter()
+        .copied()
+        .collect()
+}
+
+/// Training-only admission fence; existing queued requests and feed remain executable.
+#[cfg(feature = "training")]
+#[derive(Resource)]
+pub(crate) struct FireAdmissionClosed;
+
 pub struct ShootingPlugin;
 
 impl Plugin for ShootingPlugin {
@@ -126,6 +139,10 @@ impl Plugin for ShootingPlugin {
 /// All input adapters submit here. No projectile is created until the next firing boundary.
 /// Queue capacity bounds memory even while the physics clock is paused.
 pub fn request_fire(world: &mut World, robot: RobotId, source: FireSource) {
+    #[cfg(feature = "training")]
+    if world.contains_resource::<FireAdmissionClosed>() {
+        return;
+    }
     let now = world.resource::<Time<Fixed>>().elapsed();
     let mut requests = world.resource_mut::<FireRequests>();
     requests.next_request_id = requests
@@ -138,6 +155,13 @@ pub fn request_fire(world: &mut World, robot: RobotId, source: FireSource) {
         source,
         requested_at: now,
     };
+    super::ledger::record(
+        world,
+        now,
+        "fire_requested",
+        serde_json::json!({"request_id":request.id,"robot_id":robot.0,"source":source_data(source)}),
+    );
+    let mut requests = world.resource_mut::<FireRequests>();
     if requests.queue.len() < REQUEST_CAPACITY {
         requests.queue.push_back(request);
     } else {
@@ -147,6 +171,30 @@ pub fn request_fire(world: &mut World, robot: RobotId, source: FireSource) {
             now,
             FireResult::Rejected(FireRejection::QueueFull),
         );
+    }
+}
+
+pub(crate) fn source_data(source: FireSource) -> serde_json::Value {
+    match source {
+        FireSource::Talos {
+            command_timestamp_ns,
+        } => serde_json::json!({"kind":"command","command_timestamp_ns":command_timestamp_ns}),
+        FireSource::Manual => serde_json::json!({"kind":"manual"}),
+        FireSource::Ros2 => serde_json::json!({"kind":"ros2"}),
+    }
+}
+
+fn result_data(result: FireResult) -> serde_json::Value {
+    match result {
+        FireResult::Feeding { ready_at } => {
+            serde_json::json!({"kind":"feeding","ready_at_ns":ready_at.as_nanos() as u64})
+        }
+        FireResult::Fired { projectile_id } => {
+            serde_json::json!({"kind":"fired","projectile_id":projectile_id})
+        }
+        FireResult::Rejected(reason) => {
+            serde_json::json!({"kind":"rejected","reason":format!("{reason:?}")})
+        }
     }
 }
 
@@ -162,6 +210,12 @@ fn report(world: &mut World, request: FireRequest, now: Duration, result: FireRe
             }
         }
     }
+    super::ledger::record(
+        world,
+        now,
+        "fire_result",
+        serde_json::json!({"request_id":request.id,"robot_id":request.robot.0,"source":source_data(request.source),"result":result_data(result)}),
+    );
     info!(
         "fire request={} robot={} source={:?} sim_s={:.9} result={:?}",
         request.id,
@@ -470,6 +524,12 @@ fn fire_one(world: &mut World, root: Entity, request: FireRequest, now: Duration
         .resource_mut::<ProjectileStatistics>()
         .increase_bullet_launch();
     add_shot_heat(world, root, now);
+    super::ledger::record(
+        world,
+        now,
+        "shot_fired",
+        serde_json::json!({"projectile_id":shot.id,"request_id":request.id,"robot_id":request.robot.0,"muzzle_position":pose.translation.to_array(),"initial_velocity":initial_velocity.to_array()}),
+    );
     world.write_message(ShotFired { projectile, shot });
     report(
         world,

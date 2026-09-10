@@ -1,7 +1,9 @@
 #![allow(dead_code)]
 mod capture;
+mod capture_geometry;
 mod components;
 mod config;
+mod gimbal_actuator;
 mod handler;
 mod metalfx;
 mod robomaster;
@@ -238,7 +240,6 @@ fn main() {
                     .before(RenderSystems::Render),
                 // Cleanup phase
                 (
-                    cleanup_projectiles,
                     screenshot_on_f2
                         .run_if(|input: Res<ButtonInput<KeyCode>>| input.just_pressed(KeyCode::F2)),
                     screenshot_saving,
@@ -257,7 +258,8 @@ fn main() {
                 .run_if(controller_dart_just_pressed),
         )
         .add_systems(PostUpdate, uav_launch.after(TransformSystems::Propagate))
-        .add_systems(FixedUpdate, projectile_aerodynamics);
+        .add_systems(FixedUpdate, projectile_aerodynamics)
+        .add_systems(FixedLast, cleanup_projectiles);
 
     if config.debug.diagnostics {
         app.add_plugins((

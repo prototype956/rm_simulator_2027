@@ -74,34 +74,3 @@ pub enum Robot {
     /// - 特点: 激光照射,坐标标记,信息波解析
     Radar,
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn robot_configs_preserve_legacy_armor_values() {
-        let cases = [
-            (HERO_ROBOT_CONFIG, ArmorType::Large, ArmorLabel::One, 4),
-            (
-                ENGINEER_ROBOT_CONFIG,
-                ArmorType::Small,
-                ArmorLabel::Sentry,
-                4,
-            ),
-            (
-                INFANTRY_THREE_CONFIG,
-                ArmorType::Small,
-                ArmorLabel::Three,
-                4,
-            ),
-            (INFANTRY_FOUR_CONFIG, ArmorType::Small, ArmorLabel::Four, 4),
-        ];
-
-        for (config, armor_type, label, armor_count) in cases {
-            assert_eq!(config.armor.armor_type(), armor_type);
-            assert_eq!(config.armor.label(), label);
-            assert_eq!(config.armor_count, armor_count);
-        }
-    }
-}

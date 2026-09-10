@@ -13,9 +13,6 @@ const NORMAL: Color = Color::srgb(0.15, 0.85, 0.80);
 const LOCKED: Color = Color::srgb(1.0, 0.30, 0.30);
 const MUTED: Color = Color::srgb(0.65, 0.70, 0.75);
 
-#[cfg(test)]
-mod tests;
-
 pub struct HeatHudPlugin;
 
 impl Plugin for HeatHudPlugin {

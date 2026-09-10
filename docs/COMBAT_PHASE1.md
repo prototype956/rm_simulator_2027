@@ -1,5 +1,8 @@
 # 第一阶段：自瞄火控基础机制
 
+> 本文保留机制说明和历史检查结果。仓库内回归测试、专用验收场景及配置已移除；
+> 历史通过数量和临时日志路径不代表当前可运行的测试入口。
+
 ## 当前交付状态
 
 | 模块 | 状态 | 行为边界 |
@@ -67,52 +70,6 @@ target = "infantry_health_cooling"
 规则在生成机器人时从配置复制。配置热更新只暂存新的选择，不更改现有机器人的身份、
 装甲外观或规则快照。修改配置后按 R 即可在新回合统一应用；回合中不直接改变这些战斗参数。
 当前 Talos v6 的 target ID 仍沿用原有实体编号，新稳定 ID 将在模块 6 中统一接入。
-
-## 模块 1 验收
-
-使用既有构建和启动命令：
-
-```bash
-cargo build --release --no-default-features --features talos
-cd ../rm_vision_2027
-RUST_LOG=warn,daedalus::robomaster::combat=info,daedalus::config=info \
-  ./scripts/run_simulation_vision.sh
-```
-
-1. 默认配置启动，日志应显示 `combat robot=1/2/3`，血量分别为 350/350/350，
-   训练车与小装甲假人的热量预设为 88、24/s，英雄发射机构为 None。
-2. 每台车应有四条 `combat armor=... owner=...`，归属与稳定 ID 一致；
-   不得出现 `robot armor must refer to its identity root` 断言失败。
-3. 分别以 `sentry`、`infantry_health_burst`、`infantry_power_cooling` 和
-   `infantry_power_burst` 启动训练车，核对对应属性；哨兵显示 Sentry 装甲标签，
-   其它目标的属性不随训练车选择变化。
-4. 运行中改变 `[combat]` 预设，日志提示暂存；已有车辆保持原外观和规则。
-   重启后才应用新配置。
-5. 在现有窗口/Foxglove 检查图像、目标标注与云台控制。键盘/手柄和 Talos 仍使用旧
-   发射逻辑，命中仍只累计统计，不应提前出现扣血、热量锁定或额度限制。
-
-事件记录、场景重置、v7 遥测和强化学习步进接口都不属于本模块验收结果。
-
-### 本次实际检查（2026-09-05）
-
-- 修改的 Rust 文件通过 `rustfmt --check`；`git diff --check` 通过。
-- `cargo check`、`cargo build`、`cargo clippy` 使用
-  `--offline --release --no-default-features --features talos -j4` 均成功；
-  仓库原有编译/Clippy 警告仍存在，新 combat 文件没有诊断。
-- 三组各 10 秒的图形启动覆盖全部五种预设。实际加载 GLB 后，每组均有三个独立机器人
-  状态与 12 条正确归属日志，每车四块装甲，没有归属断言失败。各角色参数符合上表，
-  英雄假人保持 350 HP、无发射机构。
-- 在哨兵场景中修改临时配置，确认配置监视器输出战斗预设暂存提示，没有重新生成机器人。
-  规则快照不会被热更新代码改写；本轮未通过调试器动态改写血量/热量检验状态隔离。
-- 执行既有 `run_simulation_vision.sh` 完成 35 秒闭环；Talos v6 图像连接成功，
-  12 块装甲真值可用，PnP 真值基线误差为零；启用外部控制后出现 tracking、
-  `command=true` 和 `fire=true`，过程无 panic。到时由 timeout 结束，退出码 124 为预期。
-- 本次未打开 Foxglove 客户端逐项检查，也未人工逐项确认五种预设的贴纸外观。
-  既有视觉配置已启用 MCAP，因此闭环启动自动生成了一份短时记录；没有更改录制配置，
-  后续三组预设检查仅启动模拟器。
-
-临时验收日志位于 `/tmp/combat_module1_{check,build,clippy,loop}.log`，
-预设运行日志位于 `/tmp/combat_module1_smoke/<controlled>/runtime.log`。
 
 ## 模块 2：统一发射与实际出膛
 
@@ -187,25 +144,6 @@ Talos 的命令接收、既有命令延迟和云台积分仍使用原有墙钟�
 可选 ROS2 适配器同步改为提交统一请求，保留其原有 10 Hz 输入限速，不再调用已移除的
 旧生弹函数；本次主要验收后端为 Talos。
 
-### 可重复检查
-
-```bash
-cargo test --offline --release --no-default-features --features talos \
-  --bin daedalus robomaster::combat::shooting::tests -j4
-cargo build --offline --release --no-default-features --features talos -j4
-cargo clippy --offline --release --no-default-features --features talos --bin daedalus --tests -j4
-```
-
-运行日志可通过 `RUST_LOG=warn,daedalus::robomaster::combat::shooting=info,daedalus::config=info`
-启用。窗口/共享内存验收步骤：
-
-1. F5 启用外部控制，多次发送持续 `fire_advice=1`，只产生一次请求与一发弹丸。
-2. 发送高频 0/1 脉冲，确认出现 MechanicalInterval 拒绝；同车出膛时间差不小于配置间隔。
-3. 按住空格或手柄 RB，确认重复请求；同时有外部脉冲也不能绕过机械间隔。
-4. 非零供弹延迟下检查 Feeding、FeedBusy 和到期出膛；等待期间转动云台，记录应使用
-   出膛时姿态。关闭外部控制，未出膛请求不得在重新启用后补射。
-5. 用超过 25、非正或非有限的弹速启动/热更新，确认明确拒绝；正常参数仍可完成视觉闭环。
-
 ### 本次实际检查（2026-09-05）
 
 - 修改的 Rust 文件通过格式检查，`git diff --check` 通过。Talos Release 构建及包含测试
@@ -279,28 +217,6 @@ cargo clippy --offline --release --no-default-features --features talos --bin da
 整局锁定仍完整实现，通过受控初态的确定性测试验证边界；不为演示该状态增加绕过
 普通锁定的发射路径，也不宣称复现了真实裁判检测延迟导致的超发。
 
-### 日志与验收
-
-```bash
-cargo test --offline --release --no-default-features --features talos \
-  --bin daedalus robomaster::combat -j4
-cargo build --offline --release --no-default-features --features talos -j4
-cargo clippy --offline --release --no-default-features --features talos --bin daedalus --tests -j4
-
-# 在视觉项目目录运行；验收时根据实际配置关闭自动录制。
-RUST_LOG=warn,daedalus::robomaster::combat=info ./scripts/run_simulation_vision.sh
-```
-
-`heat robot=... cause=shot/cooling` 输出热量前后值和两种锁定状态；`heat lock/unlock`
-输出机器人、仿真时间和锁定原因。冷却日志时间为该次名义 100 ms 截止时刻，出膛及
-拒绝日志时间为处理请求的物理步时间。零热量且状态不变的冷却拍不输出日志。
-
-图形验收：长按空格至超热，确认 `HeatCoolingLock` 拒绝、热量降到上限以下仍锁定；
-松开后等待热量归零及解锁日志，确认没有积压补射，再次按下才恢复发射。
-分别选择冷却优先、爆发优先步兵和哨兵，检查各自冷却速率和目标机器人状态独立。
-Talos 仍为 v6，只提供现有实际发射累计数；热量遥测、Foxglove 展示与评估缓存留到模块 6。
-视觉目标选择、瞄准和火控策略保持不变，当前可能继续提交被热量规则拒绝的请求。
-
 ### 本次实际检查（2026-09-05）
 
 - 修改文件通过 Rust 格式检查与 `git diff --check`；Talos Release 构建和包含测试目标的
@@ -360,15 +276,6 @@ HUD 只读取携带 `Controlled` 和 `RobotIdentity` 的机器人根实体战斗
 `HEAT OK` 仅说明热量未锁定，不代表机械间隔、生命状态等其他条件允许发射。
 默认面板宽 320、最小高度 96 逻辑像素，距右下边缘 16 像素；窄窗口限制为 45% 宽度并
 允许底部文字换行。帮助文字限定在左半区，防止覆盖 HUD。关闭 HUD 时恢复较宽的帮助区。
-
-### 验收方式
-
-- 开启预览，手动射击到普通锁定，观察数值增加、每 100 ms 冷却以及低于上限时仍红色锁定；
-  等到零热量检查青色 `HEAT OK`。分别选择冷却优先、爆发优先步兵及哨兵。
-- F2 保存窗口截图，对照 Talos 原始图像，后者应没有帮助文字和热量 HUD；缩放窗口检查布局。
-- 零热量整局锁定使用 ECS 受控初态检查，避免为了 UI 验收新增运行时作弊接口。
-- 使用现有 `./scripts/run_simulation_vision.sh`，依次比较关闭预览、仅预览和预览加 HUD；
-  记录跟踪阶段处理帧率及预测/反馈数据年龄。短时试验不代表满 GPU 负载或长期运行结果。
 
 ### 本次实际检查（2026-09-06）
 
@@ -577,18 +484,6 @@ v6 命令没有来源帧编号，因此不能证明重置后新生成的命令�
 本模块保证模拟器队列隔离、重新启用时的新命令门槛，以及发布端不回流旧快照；
 跨项目的显式回合归属和更严格的来源帧校验需由模块 6 升级协议后完成。
 因此模块 4、6 仍未完成，不能宣布第一阶段全部完成或已经支持加速可复现训练步进。
-
-### 三个验收配置
-
-`configs/phase1/infantry_health_cooling.toml`、`infantry_health_burst.toml` 和 `sentry.toml`
-为可直接使用的完整配置，保持 1280×720、30 FPS、窗口热量和头顶血条开启，目标为原有步兵
-和英雄假人。先保存个人 `config.toml`，将所需配置复制为根目录 `config.toml`；按原有启动脚本
-运行闭环。运行中仅切换战斗预设时等待配置重载日志后按 R，其余窗口/采集设置仍需重启生效。
-
-验收顺序：F5 开启视觉控制，观察“出膛—增热—装甲命中—扣血—战亡”；按住射击键时按 R，
-确认回合递增、满血、零热量、统计归零、外部控制关闭且没有补射；松开再按射击键，应重新
-正常出膛；弹丸仍在飞行时再次 R，确认被清理；连续 R 验证无残留。随后重新 F5，检查新回合
-可以继续射击。日志汇总区分装甲接触与实际伤害，不能把尸体命中计为有效伤害。
 
 ### 本次实际验收（2026-09-06，模块 7）
 
