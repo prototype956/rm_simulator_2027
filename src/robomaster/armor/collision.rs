@@ -1,7 +1,9 @@
 use avian3d::prelude::{CollisionEnd, CollisionEventsEnabled};
-use bevy::prelude::{ChildOf, Commands, Entity, On, Plugin, Query, ResMut, With};
+use bevy::prelude::{ChildOf, Commands, Entity, Local, On, Plugin, Query, ResMut, With, Without};
+use std::collections::HashSet;
 
 use super::construct::Armor;
+use crate::robomaster::combat::shooting::ProjectileShot;
 use crate::robomaster::power_rune::prelude::Projectile;
 use crate::statistic::ProjectileStatistics;
 
@@ -9,7 +11,9 @@ fn handle_armor_collision(
     event: On<CollisionEnd>,
     mut commands: Commands,
     mut stats: ResMut<ProjectileStatistics>,
-    projectiles: Query<Entity, With<Projectile>>,
+    mut counted_projectiles: Local<HashSet<Entity>>,
+    // Legacy dart/non-17 mm hit counting only; combat owns first-contact 17 mm accounting.
+    projectiles: Query<Entity, (With<Projectile>, Without<ProjectileShot>)>,
     armors: Query<(), With<Armor>>,
     child_of: Query<&ChildOf>,
 ) {
@@ -33,11 +37,17 @@ fn handle_armor_collision(
             .iter_ancestors(other_collider)
             .any(|ancestor| armors.contains(ancestor))
     {
+        // A projectile can end contact with several colliders in one physics step. Commands are
+        // deferred, so removing collision events alone cannot deduplicate that event batch.
+        counted_projectiles.retain(|entity| projectiles.contains(*entity));
+        if !counted_projectiles.insert(projectile_entity) {
+            return;
+        }
         // Disable collision events for this projectile so it only counts once
         commands
             .entity(projectile_entity)
             .remove::<CollisionEventsEnabled>();
-        stats.increase_accurate();
+        stats.increase_armor_hit();
     }
 }
 

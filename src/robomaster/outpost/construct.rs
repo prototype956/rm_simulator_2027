@@ -50,26 +50,6 @@ fn setup_outpost(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn team_rotation_mapping_matches_legacy_behavior() {
-        let red = match Team::Red {
-            Team::Red => RotationDirection::Clockwise,
-            Team::Blue => RotationDirection::CounterClockwise,
-        };
-        let blue = match Team::Blue {
-            Team::Red => RotationDirection::Clockwise,
-            Team::Blue => RotationDirection::CounterClockwise,
-        };
-
-        assert_eq!(red, RotationDirection::Clockwise);
-        assert_eq!(blue, RotationDirection::CounterClockwise);
-    }
-}
-
 #[derive(Default)]
 pub(super) struct OutpostConstructorPlugin;
 

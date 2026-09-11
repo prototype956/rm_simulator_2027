@@ -7,8 +7,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 // Use the talos-ipc crate instead of local modules
 use talos_ipc::{
-    CameraInfo, CapturedFrameMeta, IMAGE_HEIGHT, IMAGE_SIZE, IMAGE_WIDTH, QuaternionF32,
-    RigidTransformF32, ShmPublisher, ShmSubscriber,
+    CameraInfo, CapturedFrameMeta, IMAGE_HEIGHT, IMAGE_SIZE, IMAGE_WIDTH, ProjectileStatisticsMeta,
+    QuaternionF32, RigidTransformF32, ShmPublisher, ShmSubscriber,
 };
 
 type DynError = Box<dyn Error + Send + Sync + 'static>;
@@ -159,6 +159,10 @@ fn publish_frame(
     };
     let metadata = CapturedFrameMeta {
         frame_seq,
+        combat: talos_ipc::CombatFrameMeta {
+            round_id: 1,
+            ..Default::default()
+        },
         capture_timestamp_ns: timestamp_ns,
         camera_info: default_camera_info(timestamp_ns),
         world_t_gimbal: RigidTransformF32 {
@@ -177,6 +181,10 @@ fn publish_frame(
         gimbal_t_muzzle: RigidTransformF32 {
             translation: [0.2, 0.0, 0.0],
             rotation: identity,
+            ..Default::default()
+        },
+        projectile_statistics: ProjectileStatisticsMeta {
+            timestamp_ns,
             ..Default::default()
         },
         ..Default::default()

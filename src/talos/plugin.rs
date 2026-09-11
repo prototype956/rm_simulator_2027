@@ -90,7 +90,9 @@ impl Plugin for TalosPlugin {
                     .insert_resource(worker)
                     .add_systems(
                         PostUpdate,
-                        update_gimbal_actuator.before(TransformSystems::Propagate),
+                        update_gimbal_actuator
+                            .before(TransformSystems::Propagate)
+                            .before(bevy::camera::CameraUpdateSystems),
                     );
                 true
             }

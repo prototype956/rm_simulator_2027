@@ -35,7 +35,7 @@ pub fn on_hit(
         return;
     };
     if ev.result.accurate() {
-        stats.increase_accurate();
+        stats.increase_rune_hit();
         //commands.spawn(AudioPlayer::new(asset_server.load("rune_activated.ogg")));
     }
 }

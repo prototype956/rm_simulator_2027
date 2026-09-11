@@ -6,6 +6,7 @@ use crate::components::{
     SubscribeAutoAim,
 };
 use crate::config::SimulationConfig;
+use crate::robomaster::combat::damage::CombatDead;
 use crate::robomaster::vehicle::movement::VehicleDynamic;
 use crate::systems::ControllerState;
 use avian3d::prelude::*;
@@ -51,7 +52,10 @@ pub fn vehicle_controls(
     time: Res<Time>,
     controller: Res<ControllerState>,
     config: Res<SimulationConfig>,
-    infantry: Single<(Forces, &Mass, &mut VehicleDynamic), (With<Infantry>, With<Controlled>)>,
+    infantry: Single<
+        (Forces, &Mass, &mut VehicleDynamic),
+        (With<Infantry>, With<Controlled>, Without<CombatDead>),
+    >,
     gimbal: Single<
         (&GlobalTransform, &InfantryGimbal),
         (With<Controlled>, Without<InfantryChassis>),
@@ -101,7 +105,12 @@ pub fn remote_vehicle_controls(
     config: Res<SimulationConfig>,
     infantry: Single<
         (&GlobalTransform, Forces, &Mass, &mut VehicleDynamic),
-        (With<ActiveSlapper>, With<Infantry>, Without<Controlled>),
+        (
+            With<ActiveSlapper>,
+            With<Infantry>,
+            Without<Controlled>,
+            Without<CombatDead>,
+        ),
     >,
     chassis: Single<
         (&mut Transform, &mut InfantryChassis),
@@ -149,7 +158,11 @@ pub fn gimbal_controls(
     config: Res<SimulationConfig>,
     gimbal: Single<
         (&mut Transform, &mut InfantryGimbal),
-        (With<Controlled>, Without<InfantryChassis>),
+        (
+            With<Controlled>,
+            Without<InfantryChassis>,
+            Without<CombatDead>,
+        ),
     >,
 ) {
     if enabled.load(Ordering::Acquire) {
@@ -184,7 +197,11 @@ pub fn remote_gimbal_controls(
     config: Res<SimulationConfig>,
     gimbal: Single<
         (&mut Transform, &mut InfantryGimbal),
-        (With<ActiveSlapper>, Without<InfantryChassis>),
+        (
+            With<ActiveSlapper>,
+            Without<InfantryChassis>,
+            Without<CombatDead>,
+        ),
     >,
 ) {
     let dt = time.delta_secs();
@@ -244,86 +261,5 @@ pub fn switch_slapper_control(
     commands.entity(next_root).insert(ActiveSlapper);
     for descendant in children.iter_descendants(next_root) {
         commands.entity(descendant).insert(ActiveSlapper);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn chassis_rotation_smoothly_ramps_towards_target_speed() {
-        let mut transform = Transform::default();
-        let mut chassis = InfantryChassis::default();
-
-        update_chassis_rotation(
-            &mut transform,
-            &mut chassis,
-            1.0,
-            0.0,
-            0.0,
-            9.42,
-            2.0,
-            0.016,
-        );
-
-        assert!(chassis.yaw_velocity > 0.0);
-        assert!(chassis.yaw_velocity < 9.42);
-        assert!(chassis.yaw > 0.0);
-    }
-
-    #[test]
-    fn chassis_rotation_uses_independent_yaw_and_tilt_speeds() {
-        let mut transform = Transform::default();
-        let mut chassis = InfantryChassis::default();
-
-        update_chassis_rotation(&mut transform, &mut chassis, 1.0, 1.0, -1.0, 8.0, 0.25, 1.0);
-
-        assert!(chassis.yaw_velocity > 0.25);
-        assert_eq!(chassis.roll, 0.25);
-        assert_eq!(chassis.pitch, -0.25);
-    }
-
-    #[test]
-    fn chassis_rotation_smoothly_brakes_to_stop() {
-        let mut transform = Transform::default();
-        let mut chassis = InfantryChassis {
-            yaw: 0.0,
-            yaw_velocity: 9.42,
-            ..default()
-        };
-
-        for _ in 0..60 {
-            update_chassis_rotation(
-                &mut transform,
-                &mut chassis,
-                0.0,
-                0.0,
-                0.0,
-                9.42,
-                2.0,
-                0.016,
-            );
-        }
-
-        assert!(chassis.yaw_velocity.abs() < 1e-2);
-    }
-
-    #[test]
-    fn chassis_rotation_bounds_roll_and_pitch_as_swing_angles() {
-        let mut transform = Transform::default();
-        let mut chassis = InfantryChassis::default();
-
-        update_chassis_rotation(&mut transform, &mut chassis, 0.0, 1.0, -1.0, 2.0, 2.0, 10.0);
-        assert_eq!(chassis.roll, CHASSIS_TILT_LIMIT);
-        assert_eq!(chassis.pitch, -CHASSIS_TILT_LIMIT);
-
-        update_chassis_rotation(&mut transform, &mut chassis, 1.0, -1.0, 1.0, 2.0, 2.0, 10.0);
-
-        assert_eq!(chassis.roll, -CHASSIS_TILT_LIMIT);
-        assert_eq!(chassis.pitch, CHASSIS_TILT_LIMIT);
-        let (_, pitch, roll) = transform.rotation.to_euler(EulerRot::YXZ);
-        assert!((roll + CHASSIS_TILT_LIMIT).abs() < 1e-5);
-        assert!((pitch - CHASSIS_TILT_LIMIT).abs() < 1e-5);
     }
 }

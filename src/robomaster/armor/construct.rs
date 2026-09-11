@@ -12,7 +12,6 @@ use bevy::prelude::{
     Added, Assets, Changed, ChildOf, Children, Commands, Component, Entity, Mesh, Mesh3d, Name,
     Plugin, Query, Res, Update, Vec3, Visibility, With, info,
 };
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Component, Debug)]
 pub struct ScanArmor {
@@ -97,6 +96,7 @@ pub struct ArmorConstructor<'w, 's> {
     children: Query<'w, 's, Read<Children>>,
     child_of: Query<'w, 's, Read<ChildOf>>,
     name: Query<'w, 's, Read<Name>, With<ChildOf>>,
+    all_names: Query<'w, 's, Read<Name>>,
     mesh_query: Query<'w, 's, Read<Mesh3d>>,
     collision_layers: Query<'w, 's, Read<CollisionLayers>>,
     mesh_assets: Res<'w, Assets<Mesh>>,
@@ -265,9 +265,27 @@ impl ArmorConstructor<'_, '_> {
             self.commands.entity(hide).despawn();
         }
 
-        static ID: AtomicUsize = AtomicUsize::new(0);
+        let mut path = Vec::new();
+        let mut cursor = root;
+        loop {
+            if let Ok(n) = self.all_names.get(cursor) {
+                path.push(n.as_str().to_owned());
+            }
+            match self.child_of.get(cursor) {
+                Ok(p) => cursor = p.parent(),
+                Err(_) => break,
+            }
+        }
+        // FNV-1a over the named hierarchy, independent of asset loading and entity allocation.
+        let id = path
+            .iter()
+            .rev()
+            .flat_map(|s| s.bytes().chain([0]))
+            .fold(2166136261u32, |h, b| (h ^ b as u32).wrapping_mul(16777619))
+            & 0x3fffffff;
+
         let ar = ArmorRoot {
-            id: ArmorId(ID.fetch_add(1, Ordering::SeqCst)),
+            id: ArmorId(id as usize),
             team: armor_data.team,
             spec: armor_data.spec,
             label: armor_data.spec.label(),

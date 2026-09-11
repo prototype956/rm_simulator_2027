@@ -19,6 +19,19 @@ pub fn following_controls(mut mode: ResMut<CameraMode>, controller: Res<Controll
     }
 }
 
+/// Camera pose in Bevy world coordinates for the vehicle GLB's local camera/muzzle offsets.
+/// Shared by rendered views and synthetic projection so spawn visibility uses the same optics.
+pub fn robot_camera_pose(
+    root: &Transform,
+    gimbal: &Transform,
+    view: &Transform,
+    muzzle: &Transform,
+) -> Transform {
+    let rotation = root.rotation * gimbal.rotation;
+    Transform::from_translation(root.translation + rotation * view.translation)
+        .with_rotation(rotation * muzzle.rotation * Quat::from_rotation_x(PI / 2.0))
+}
+
 pub fn update_camera_follow(
     camera_query: Single<(&mut Transform, &MainCamera), Without<Controlled>>,
     infantry: Single<&Transform, (With<Infantry>, With<Controlled>)>,
@@ -32,14 +45,8 @@ pub fn update_camera_follow(
 
     match mode.0 {
         FollowingType::Robot => {
-            let view_offset_transform = view_offset.into_inner();
-            let gimbal_world_rotation = infantry.rotation * gimbal_transform.rotation;
-            let view_offset_world = gimbal_world_rotation * view_offset_transform.translation;
-
-            camera_transform.translation = infantry.translation + view_offset_world;
-            camera_transform.rotation = gimbal_world_rotation
-                * launch_offset.rotation
-                * Quat::from_euler(EulerRot::ZYX, 0.0, 0.0, PI / 2.0)
+            *camera_transform =
+                robot_camera_pose(&infantry, gimbal_transform, &view_offset, &launch_offset);
         }
         FollowingType::ThirdPerson => {
             let base_transform = infantry.into_inner();

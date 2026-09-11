@@ -1,3 +1,4 @@
+use crate::robomaster::combat::CombatConfig;
 use avian3d::prelude::SubstepCount;
 use bevy::prelude::*;
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -8,6 +9,8 @@ use std::path::Path;
 #[derive(Resource, Deserialize, Reflect, Clone)]
 #[reflect(Resource)]
 pub struct SimulationConfig {
+    #[serde(default)]
+    pub combat: CombatConfig,
     #[serde(default)]
     pub window: WindowConfig,
     #[serde(default)]
@@ -108,13 +111,22 @@ impl Default for DebugConfig {
 }
 
 #[derive(Deserialize, Reflect, Clone)]
+#[serde(default)]
 pub struct PreviewConfig {
     pub enabled: bool,
+    /// Window-only heat overlay. Both preview options are applied at startup.
+    pub heat_hud: bool,
+    /// Window-only screen-facing overhead HP bars for training evaluation.
+    pub health_hud: bool,
 }
 
 impl Default for PreviewConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            heat_hud: true,
+            health_hud: true,
+        }
     }
 }
 
@@ -209,7 +221,11 @@ impl Default for MecanumConfig {
 pub struct ProjectileConfig {
     pub lifetime: f32,
     pub speed: f32,
-    pub cooldown: f32,
+    /// Simulation mechanical interval, in seconds; shared by manual and external requests.
+    pub cooldown: f64,
+    /// Additional feed-to-muzzle delay, separate from the Talos command delay.
+    #[serde(default)]
+    pub launch_delay_s: f64,
     pub diameter: f32,
     pub uav_size: f32,
     pub uav_vel: f32,
@@ -218,6 +234,25 @@ pub struct ProjectileConfig {
     pub linear_damping: f32,
     #[serde(default)]
     pub aerodynamics: ProjectileAerodynamicsConfig,
+}
+
+impl ProjectileConfig {
+    pub fn validate_shooter(&self) -> Result<(), &'static str> {
+        // RMUL 2026 V1.2.0, §3.1.2–3.1.3, tables 3-3/3-4, pp. 18–20.
+        if !self.speed.is_finite() || self.speed <= 0.0 || self.speed > 25.0 {
+            return Err("projectile.speed must be finite and in (0, 25] m/s");
+        }
+        if self.cooldown <= 0.0
+            || !std::time::Duration::try_from_secs_f64(self.cooldown)
+                .is_ok_and(|duration| !duration.is_zero())
+        {
+            return Err("projectile.cooldown must be a finite positive duration");
+        }
+        if std::time::Duration::try_from_secs_f64(self.launch_delay_s).is_err() {
+            return Err("projectile.launch_delay_s must be a finite nonnegative duration");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Deserialize, Reflect, Clone)]
@@ -331,7 +366,9 @@ impl Default for LivoxRosConfig {
 impl SimulationConfig {
     pub fn load() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let content = std::fs::read_to_string("config.toml")?;
-        Ok(toml::from_str(&content)?)
+        let config: Self = toml::from_str(&content)?;
+        config.projectile.validate_shooter()?;
+        Ok(config)
     }
 }
 
@@ -340,6 +377,7 @@ impl Default for SimulationConfig {
         Self::load().unwrap_or_else(|e| {
             warn!("Failed to load config.toml: {}, using defaults", e);
             Self {
+                combat: CombatConfig::default(),
                 window: WindowConfig::default(),
                 debug: DebugConfig::default(),
                 preview: PreviewConfig::default(),
@@ -353,7 +391,8 @@ impl Default for SimulationConfig {
                 projectile: ProjectileConfig {
                     lifetime: 5.0,
                     speed: 25.0,
-                    cooldown: 0.1,
+                    cooldown: 0.05,
+                    launch_delay_s: 0.0,
                     diameter: 0.017,
                     mass: 0.017,
                     friction: 1.1,
@@ -436,12 +475,22 @@ fn config_hot_reload(
         if event.kind.is_modify() {
             match SimulationConfig::load() {
                 Ok(new_config) => {
+                    if new_config.combat != config.combat
+                        || new_config.projectile.speed != config.projectile.speed
+                        || new_config.projectile.cooldown != config.projectile.cooldown
+                        || new_config.projectile.launch_delay_s != config.projectile.launch_delay_s
+                    {
+                        info!(
+                            "Combat/shooter changes are staged; existing robots keep their round rules until R / scene reset"
+                        );
+                    }
                     info!("Config reloaded successfully");
                     if let Some(substeps) = substeps.as_deref_mut() {
                         substeps.0 = new_config.physics.substep_count;
                     }
                     if let Some(fixed_time) = fixed_time.as_deref_mut() {
-                        *fixed_time = Time::<Fixed>::from_hz(new_config.physics.fixed_hz.max(1.0));
+                        // Preserve elapsed simulation time used by per-robot firing deadlines.
+                        fixed_time.set_timestep_hz(new_config.physics.fixed_hz.max(1.0));
                     }
                     *config = new_config;
                 }

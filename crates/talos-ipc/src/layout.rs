@@ -4,8 +4,8 @@ pub const IMAGE_WIDTH: u32 = 1440;
 pub const IMAGE_HEIGHT: u32 = 1080;
 
 pub const CACHE_LINE_SIZE: usize = 64;
-pub const SHM_MAGIC: u32 = 0x54414C05;
-pub const SHM_VERSION: u32 = 5;
+pub const SHM_MAGIC: u32 = 0x54414C07;
+pub const SHM_VERSION: u32 = 7;
 
 pub const IMAGE_CHANNELS: u32 = 3;
 pub const IMAGE_SIZE: usize = (IMAGE_WIDTH * IMAGE_HEIGHT * IMAGE_CHANNELS) as usize;
@@ -60,6 +60,119 @@ pub struct RigidTransformF32 {
 }
 const _: () = assert!(size_of::<RigidTransformF32>() == 32);
 
+/// Projectile counters sampled with the captured image.
+///
+/// This structure occupies the 32-byte reserved area from Talos IPC v5, so
+/// upgrading to v6 does not change `CapturedFrameMeta` or shared-memory sizes.
+#[repr(C, align(32))]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProjectileStatisticsMeta {
+    pub timestamp_ns: u64,
+    pub bullet_launch_count: u64,
+    pub armor_hit_count: u64,
+    pub rune_hit_count: u32,
+    pub dart_launch_count: u32,
+}
+const _: () = assert!(size_of::<ProjectileStatisticsMeta>() == 32);
+
+/// Combat state encoding and offsets are mirrored in combat_frame_data.hpp.
+#[repr(C, align(32))]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RobotCombatMeta {
+    pub robot_id: u64,
+    pub hp: u32,
+    pub max_hp: u32,
+    pub heat: f32,
+    pub heat_limit: f32,
+    pub cooling_per_second: f32,
+    pub allowance_remaining: u32,
+    pub fire_blocks: u32,
+    pub team: u8,
+    pub role: u8,
+    pub life: u8,
+    pub shooter: u8,
+    pub allowance_mode: u8,
+    pub fire_permitted: u8,
+    pub _pad1: [u8; 6],
+    pub actual_shots: u64,
+    pub rejected_requests: u64,
+    pub damage_dealt: u64,
+    pub damage_taken: u64,
+    pub kills: u64,
+    pub armor_contacts: u64,
+    pub damaging_hits: u64,
+    pub heat_lock_count: u64,
+    pub heat_locked_s: f64,
+    pub _pad2: [u8; 8],
+}
+const _: () = assert!(size_of::<RobotCombatMeta>() == 128);
+
+/// NUL-terminated UTF-8 event description includes type, participants and rejection/lock cause.
+/// IDs are process-monotonic; times are Fixed simulation nanoseconds since round start.
+#[repr(C, align(64))]
+#[derive(Debug, Clone, Copy)]
+pub struct CombatEventMeta {
+    pub id: u64,
+    pub round_id: u64,
+    pub round_time_ns: u64,
+    pub detail: [u8; 232],
+}
+impl Default for CombatEventMeta {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            round_id: 0,
+            round_time_ns: 0,
+            detail: [0; 232],
+        }
+    }
+}
+const _: () = assert!(size_of::<CombatEventMeta>() == 256);
+
+pub const COMBAT_MAX_ROBOTS: usize = 16;
+pub const COMBAT_MAX_EVENTS: usize = 64;
+/// Current physical truth and the latest 10 Hz referee sample have distinct timestamps.
+/// Latest 64 events are repeated: consumers deduplicate IDs and detect missing IDs.
+#[repr(C, align(64))]
+#[derive(Debug, Clone, Copy)]
+pub struct CombatFrameMeta {
+    pub round_id: u64,
+    pub sim_time_ns: u64,
+    pub round_started_ns: u64,
+    pub referee_sample_ns: u64,
+    pub referee_sample_sequence: u64,
+    pub events_dropped: u64,
+    pub robot_count: u32,
+    pub event_count: u32,
+    pub referee_valid: u8,
+    pub _pad: [u8; 7],
+    pub self_referee: RobotCombatMeta,
+    pub robots: [RobotCombatMeta; COMBAT_MAX_ROBOTS],
+    pub events: [CombatEventMeta; COMBAT_MAX_EVENTS],
+}
+impl Default for CombatFrameMeta {
+    fn default() -> Self {
+        Self {
+            round_id: 0,
+            sim_time_ns: 0,
+            round_started_ns: 0,
+            referee_sample_ns: 0,
+            referee_sample_sequence: 0,
+            events_dropped: 0,
+            robot_count: 0,
+            event_count: 0,
+            referee_valid: 0,
+            _pad: [0; 7],
+            self_referee: RobotCombatMeta::default(),
+            robots: [RobotCombatMeta::default(); COMBAT_MAX_ROBOTS],
+            events: [CombatEventMeta::default(); COMBAT_MAX_EVENTS],
+        }
+    }
+}
+const _: () = assert!(size_of::<CombatFrameMeta>() == 18624);
+const _: () = assert!(std::mem::offset_of!(CombatFrameMeta, self_referee) == 64);
+const _: () = assert!(std::mem::offset_of!(CombatFrameMeta, events) == 2240);
+
 #[repr(C, align(32))]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GimbalCmd {
@@ -68,9 +181,13 @@ pub struct GimbalCmd {
     pub pitch_deg: f32,
     pub distance_m: f32,
     pub fire_advice: u8,
-    pub _pad: [u8; 11],
+    pub _pad: [u8; 3],
+    pub source_round_id: u64,
+    pub source_frame_sequence: u64,
+    pub source_capture_timestamp_ns: u64,
+    pub _pad2: [u8; 16],
 }
-const _: () = assert!(size_of::<GimbalCmd>() == 32);
+const _: () = assert!(size_of::<GimbalCmd>() == 64);
 
 #[repr(C, align(64))]
 #[derive(Debug, Clone, Copy, Default)]
@@ -134,7 +251,7 @@ pub struct GimbalTripleBuffer {
     pub _pad1: [u8; 61],
     pub slots: [GimbalCmd; 3],
 }
-const _: () = assert!(size_of::<GimbalTripleBuffer>() == 192);
+const _: () = assert!(size_of::<GimbalTripleBuffer>() == 256);
 
 #[repr(C, align(64))]
 pub struct ShmHeader {
@@ -179,7 +296,8 @@ pub struct GroundTruthArmor {
     pub _pad1: u8,
     pub width_m: f32,
     pub height_m: f32,
-    pub _pad2: [u8; 12],
+    pub _pad2: [u8; 4],
+    pub owner_robot_id: u64,
     pub world_t_armor: RigidTransformF32,
     /// TL/TR/BR/BL light-bar endpoints in the ROS world frame.
     pub corners_world: [[f32; 3]; 4],
@@ -293,11 +411,15 @@ pub struct CapturedFrameMeta {
     pub world_t_gimbal: RigidTransformF32,
     pub gimbal_t_camera_optical: RigidTransformF32,
     pub gimbal_t_muzzle: RigidTransformF32,
-    pub _pad2: [u8; 32],
+    pub projectile_statistics: ProjectileStatisticsMeta,
     pub chassis_observation: ChassisObservation,
     pub ground_truth: GroundTruthBatch,
+    pub combat: CombatFrameMeta,
 }
-const _: () = assert!(size_of::<CapturedFrameMeta>() == 6144);
+const _: () = assert!(size_of::<CapturedFrameMeta>() == 24768);
+const _: () = assert!(std::mem::offset_of!(CapturedFrameMeta, projectile_statistics) == 288);
+const _: () = assert!(std::mem::offset_of!(CapturedFrameMeta, chassis_observation) == 320);
+const _: () = assert!(std::mem::offset_of!(CapturedFrameMeta, ground_truth) == 448);
 
 #[repr(C, align(64))]
 pub struct FrameTripleBuffer {
@@ -307,7 +429,7 @@ pub struct FrameTripleBuffer {
     pub _pad1: [u8; 61],
     pub slots: [CapturedFrameMeta; 3],
 }
-const _: () = assert!(size_of::<FrameTripleBuffer>() == 18496);
+const _: () = assert!(size_of::<FrameTripleBuffer>() == 74368);
 
 #[repr(C, align(64))]
 #[derive(Debug, Clone, Copy)]
@@ -361,10 +483,10 @@ pub struct ShmMetaRegion {
     pub gimbal_cmd: GimbalTripleBuffer,
     pub runtime_state: RuntimeState,
 }
-const _: () = assert!(size_of::<ShmMetaRegion>() == 18816);
+const _: () = assert!(size_of::<ShmMetaRegion>() == 74752);
 const _: () = assert!(std::mem::offset_of!(ShmMetaRegion, frame) == 64);
-const _: () = assert!(std::mem::offset_of!(ShmMetaRegion, gimbal_cmd) == 18560);
-const _: () = assert!(std::mem::offset_of!(ShmMetaRegion, runtime_state) == 18752);
+const _: () = assert!(std::mem::offset_of!(ShmMetaRegion, gimbal_cmd) == 74432);
+const _: () = assert!(std::mem::offset_of!(ShmMetaRegion, runtime_state) == 74688);
 
 impl Default for FrameTripleBuffer {
     fn default() -> Self {
@@ -414,3 +536,7 @@ impl Default for ShmMetaRegion {
         }
     }
 }
+
+const _: () = assert!(std::mem::offset_of!(CapturedFrameMeta, combat) == 6144);
+
+const _: () = assert!(std::mem::offset_of!(GroundTruthArmor, owner_robot_id) == 24);

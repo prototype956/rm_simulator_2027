@@ -1,7 +1,9 @@
 #![allow(dead_code)]
 mod capture;
+mod capture_geometry;
 mod components;
 mod config;
+mod gimbal_actuator;
 mod handler;
 mod metalfx;
 mod robomaster;
@@ -28,7 +30,7 @@ use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
-use crate::components::{CameraMode, FollowingType, ProjectileCooldown, SubscribeAutoAim};
+use crate::components::{CameraMode, FollowingType, SubscribeAutoAim};
 use crate::config::{ConfigPlugin, SimulationConfig};
 use crate::handler::{on_activate, on_hit};
 use crate::metalfx::MetalFxTemporalPlugin;
@@ -38,11 +40,11 @@ use crate::statistic::ProjectileStatistics;
 use crate::systems::{
     ChassisObservationFrame, ControllerState, GameplaySystems, PreviousKinematicState,
     change_appearance, cleanup_projectiles, clear_controller_input, controller_dart_just_pressed,
-    controller_shoot_pressed, dart_launch, following_controls, freecam_controls, gimbal_controls,
-    projectile_aerodynamics, projectile_launch, remote_gimbal_controls, remote_vehicle_controls,
-    sample_gamepad_controller, sample_keyboard_controller, screenshot_on_f2, screenshot_saving,
-    setup_projectile, switch_slapper_control, uav_launch, update_auto_aim_subscription,
-    update_chassis_observation, update_help_text, vehicle_controls,
+    dart_launch, following_controls, freecam_controls, gimbal_controls, projectile_aerodynamics,
+    remote_gimbal_controls, remote_vehicle_controls, sample_gamepad_controller,
+    sample_keyboard_controller, screenshot_on_f2, screenshot_saving, setup_projectile,
+    switch_slapper_control, uav_launch, update_auto_aim_subscription, update_chassis_observation,
+    update_help_text, vehicle_controls,
 };
 
 #[cfg(feature = "ros2")]
@@ -127,7 +129,10 @@ fn should_enable_talos_plugin(app: &App) -> bool {
 }
 
 fn main() {
-    let config = SimulationConfig::default();
+    let config = SimulationConfig::load().unwrap_or_else(|error| {
+        eprintln!("Cannot apply config.toml: {error}");
+        std::process::exit(1);
+    });
     let present_mode = present_mode_from_config(&config.window.present_mode).unwrap_or_else(|| {
         warn!(
             "Unknown window.present_mode {:?}, falling back to auto_no_vsync",
@@ -147,7 +152,8 @@ fn main() {
                 ..default()
             })
             .set(render_plugin_for_platform()),
-        PhysicsPlugins::default(),
+        PhysicsPlugins::default()
+            .with_collision_hooks::<robomaster::combat::damage::ProjectileContactHooks>(),
     ));
     app.insert_resource(WinitSettings::continuous());
     if config.window.max_fps > 0.0 {
@@ -166,6 +172,7 @@ fn main() {
     }
 
     app.add_plugins(RoboMasterPlugins)
+        .add_plugins(systems::HeatHudPlugin)
         .add_plugins(MetalFxTemporalPlugin)
         .add_plugins(ConfigPlugin)
         .init_resource::<CameraMode>()
@@ -178,10 +185,6 @@ fn main() {
         .insert_resource(SubstepCount(config.physics.substep_count))
         .insert_resource(fixed_time_from_config(&config))
         .insert_resource(SubscribeAutoAim(AtomicBool::new(false)))
-        .insert_resource(ProjectileCooldown(Timer::from_seconds(
-            config.projectile.cooldown,
-            TimerMode::Once,
-        )))
         .add_systems(Startup, (setup, setup_projectile))
         .add_observer(setup_ground)
         .add_observer(setup_dart_launch)
@@ -200,14 +203,22 @@ fn main() {
                 .chain(),
         )
         .add_systems(
+            PreUpdate,
+            (
+                clear_controller_input,
+                sample_keyboard_controller,
+                sample_gamepad_controller,
+                systems::enforce_round_input_release,
+                update_auto_aim_subscription,
+            )
+                .chain()
+                .after(bevy::input::InputSystems),
+        )
+        .add_systems(
             Update,
             (
                 // Input phase
                 (
-                    clear_controller_input,
-                    sample_keyboard_controller,
-                    sample_gamepad_controller,
-                    update_auto_aim_subscription,
                     following_controls,
                     switch_slapper_control,
                     vehicle_controls.run_if(|mode: Res<CameraMode>| mode.0 != FollowingType::Free),
@@ -229,7 +240,6 @@ fn main() {
                     .before(RenderSystems::Render),
                 // Cleanup phase
                 (
-                    cleanup_projectiles,
                     screenshot_on_f2
                         .run_if(|input: Res<ButtonInput<KeyCode>>| input.just_pressed(KeyCode::F2)),
                     screenshot_saving,
@@ -243,18 +253,13 @@ fn main() {
         )
         .add_systems(
             PostUpdate,
-            projectile_launch
-                .after(TransformSystems::Propagate)
-                .run_if(controller_shoot_pressed),
-        )
-        .add_systems(
-            PostUpdate,
             dart_launch
                 .after(TransformSystems::Propagate)
                 .run_if(controller_dart_just_pressed),
         )
         .add_systems(PostUpdate, uav_launch.after(TransformSystems::Propagate))
-        .add_systems(FixedUpdate, projectile_aerodynamics);
+        .add_systems(FixedUpdate, projectile_aerodynamics)
+        .add_systems(FixedLast, cleanup_projectiles);
 
     if config.debug.diagnostics {
         app.add_plugins((

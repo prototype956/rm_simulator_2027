@@ -1,3 +1,4 @@
+use crate::robomaster::combat::shooting::ProjectileShot;
 use crate::robomaster::power_rune::common::RuneHitOutcome;
 use crate::robomaster::power_rune::rotation::PowerRuneRotation;
 use crate::robomaster::power_rune::rune::PowerRuneMechanism;
@@ -5,6 +6,7 @@ use avian3d::prelude::{CollisionEnd, CollisionEventsEnabled};
 use bevy::prelude::{
     ChildOf, Commands, Component, Entity, EntityEvent, On, Query, ResMut, Resource, Update, With,
 };
+use bevy::prelude::{Without, World};
 use std::collections::HashSet;
 
 #[derive(Component)]
@@ -50,7 +52,7 @@ fn handle_rune_collision(
     mut consumed_projectiles: ResMut<ConsumedRuneProjectiles>,
     mut runes: Query<(&mut PowerRuneMechanism, &mut PowerRuneRotation)>,
     targets: Query<&RuneIndex>,
-    projectiles: Query<Entity, With<Projectile>>,
+    projectiles: Query<Entity, (With<Projectile>, Without<ProjectileShot>)>,
     child_of: Query<&ChildOf>,
 ) {
     let projectile_body1 = event.body1.and_then(|body| projectiles.get(body).ok());
@@ -93,6 +95,38 @@ fn handle_rune_collision(
 
     if outcome.activates_rune() {
         commands.trigger(RuneActivated { rune: target.rune });
+    }
+}
+
+/// First-impact 17 mm path. Robot combat consumes the projectile after this independent
+/// mechanism has seen the hit. Legacy darts still use the original contact-end observer.
+pub(crate) fn apply_projectile_rune_hit(world: &mut World, mut collider: Entity) {
+    let target = loop {
+        if let Some(target) = world.get::<RuneIndex>(collider) {
+            break *target;
+        }
+        let Some(parent) = world.get::<ChildOf>(collider) else {
+            return;
+        };
+        collider = parent.parent();
+    };
+    let mut runes = world.query::<(&mut PowerRuneMechanism, &mut PowerRuneRotation)>();
+    let Ok((mut mechanism, mut rotation)) = runes.get_mut(world, target.rune) else {
+        return;
+    };
+    let mut rng = rand::rng();
+    let outcome = mechanism.state_mut().hit(target.target, &mut rng);
+    rotation.sync_activation(
+        mechanism.state().mode(),
+        mechanism.state().is_activating(),
+        &mut rng,
+    );
+    world.trigger(RuneHit {
+        rune: target.rune,
+        result: HitResult { outcome },
+    });
+    if outcome.activates_rune() {
+        world.trigger(RuneActivated { rune: target.rune });
     }
 }
 

@@ -1,4 +1,5 @@
 mod armor;
+pub mod combat;
 mod common;
 mod outpost;
 pub mod power_rune;

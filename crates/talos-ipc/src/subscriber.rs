@@ -8,16 +8,18 @@ pub struct ShmSubscriber {
 
 impl ShmSubscriber {
     pub fn connect() -> Result<Self, ShmError> {
-        let meta_region = ShmRegion::open(SHM_NAME_META, size_of::<ShmMetaRegion>())?;
-
+        // Read the common header before checking the larger v7 region size.
+        let meta_region = ShmRegion::open(SHM_NAME_META, size_of::<ShmHeader>())?;
         unsafe {
-            let meta = meta_region.as_ref::<ShmMetaRegion>();
-            if meta.header.magic != SHM_MAGIC {
-                return Err(ShmError::InvalidSize);
+            let header = meta_region.as_ref::<ShmHeader>();
+            if header.magic != SHM_MAGIC || header.version != SHM_VERSION {
+                return Err(ShmError::ProtocolMismatch {
+                    actual: header.version,
+                });
             }
-            if meta.header.version != SHM_VERSION {
-                return Err(ShmError::InvalidSize);
-            }
+        }
+        if meta_region.size() != size_of::<ShmMetaRegion>() {
+            return Err(ShmError::InvalidSize);
         }
 
         Ok(Self { meta_region })

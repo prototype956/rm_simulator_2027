@@ -4,7 +4,7 @@ use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
 use bevy::world_serialization::{WorldInstance, WorldInstanceReady};
 use bevy_inspector_egui::bevy_egui::{EguiGlobalSettings, PrimaryEguiContext};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::components::{
     ActiveSlapper, Controlled, DartLaunch, GameLayer, GroundRoot, Infantry, InfantryChassis,
@@ -13,9 +13,12 @@ use crate::components::{
 };
 use crate::config::SimulationConfig;
 use crate::metalfx::MetalFxTemporalUpscaling;
+use crate::robomaster::combat::{
+    CONTROLLED_ROBOT_ID, CombatRobotBundle, HERO_TARGET_ID, RobotIdentity, RobotMember,
+    TARGET_ROBOT_ID,
+};
 use crate::robomaster::prelude::{
-    HERO_ROBOT_CONFIG, INFANTRY_THREE_CONFIG, OutpostRoot, PowerRuneRoot, ScanArmor, Team,
-    TechCoreRoot,
+    ArmorSpec, OutpostRoot, PowerRuneRoot, ScanArmor, SmallArmorLabel, Team, TechCoreRoot,
 };
 use crate::robomaster::vehicle::movement::VehicleDynamic;
 use crate::systems::spawn_text;
@@ -24,27 +27,33 @@ use crate::util::entity_query::HierarchyQuery;
 #[derive(Component)]
 pub struct ScanOutpost;
 
+/// Headless profile shares asset interpretation and physical construction with the GUI.
+#[derive(Resource)]
+pub struct HeadlessScene;
+
 pub fn setup(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     config: Res<SimulationConfig>,
     egui_global_settings: Option<ResMut<EguiGlobalSettings>>,
+    training: Option<Res<HeadlessScene>>,
 ) {
     if let Some(mut egui_global_settings) = egui_global_settings {
         egui_global_settings.auto_create_primary_context = false;
     }
-    spawn_text(&mut commands);
-    commands.spawn((
-        DirectionalLight {
-            color: Color::srgb(0.9, 0.95, 1.0),
-            illuminance: config.render.illuminance,
-            shadow_maps_enabled: config.render.shadows,
-            contact_shadows_enabled: config.render.shadows,
-            ..default()
-        },
-        Transform::from_xyz(0.0, 4.0, 0.0).looking_at(Vec3::ZERO, Vec3::new(1.0, 1.0, 1.0)),
-    ));
-
+    if training.is_none() {
+        spawn_text(&mut commands);
+        commands.spawn((
+            DirectionalLight {
+                color: Color::srgb(0.9, 0.95, 1.0),
+                illuminance: config.render.illuminance,
+                shadow_maps_enabled: config.render.shadows,
+                contact_shadows_enabled: config.render.shadows,
+                ..default()
+            },
+            Transform::from_xyz(0.0, 4.0, 0.0).looking_at(Vec3::ZERO, Vec3::new(1.0, 1.0, 1.0)),
+        ));
+    }
     let layer_env = GameLayer::environment_collision_layers();
 
     let trimesh = || {
@@ -93,6 +102,7 @@ pub fn setup(
             .with_translation(Vec3::new(2.0, 0.5, 2.0)),
     ));
 
+    // Field structures are shared by normal rendering, training physics and its preview.
     commands.spawn((
         RigidBody::Static,
         WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("OUTPOST.glb"))),
@@ -127,6 +137,10 @@ pub fn setup(
     for i in 1..=2 {
         for j in 1..=5 {
             for k in ["ACTIVATED", "ACTIVE", "COMPLETED", "DISABLED"] {
+                // Training uses the deactivated geometry only; hidden variants cannot block rays.
+                if training.is_some() && k != "DISABLED" {
+                    continue;
+                }
                 power_rune_col.insert(
                     format!("FACE_{}_TARGET_{}_{}", i, j, k).to_string(),
                     (voxel(0.015), layer_env, Visibility::Visible, None),
@@ -145,66 +159,77 @@ pub fn setup(
     ));
 
     commands.spawn((
+        Name::new("robot_1"),
         WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("vehicle.glb"))),
         Transform::from_xyz(0.0, 1.0, 0.0),
-        Infantry::new(Team::Red, INFANTRY_THREE_CONFIG),
+        CombatRobotBundle::training(CONTROLLED_ROBOT_ID, Team::Red, config.combat.controlled)
+            .with_allowance(config.combat.controlled_allowance)
+            .with_shooter_config(&config.projectile),
         Controlled,
     ));
 
     commands.spawn((
+        Name::new("robot_2"),
         WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("vehicle.glb"))),
         Transform::from_xyz(1.0, 1.0, 1.0),
-        Infantry::new(Team::Blue, INFANTRY_THREE_CONFIG),
+        CombatRobotBundle::training(TARGET_ROBOT_ID, Team::Blue, config.combat.target)
+            .with_allowance(config.combat.target_allowance)
+            .with_shooter_config(&config.projectile),
         SlapperInfantry,
     ));
 
-    commands.spawn((
-        WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("HERO.glb"))),
-        Transform::from_xyz(2.0, 1.0, 1.0),
-        Infantry::new(Team::Blue, HERO_ROBOT_CONFIG),
-        SlapperInfantry,
-        ActiveSlapper,
-    ));
+    if training.is_none() {
+        commands.spawn((
+            Name::new("robot_3"),
+            WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("HERO.glb"))),
+            Transform::from_xyz(2.0, 1.0, 1.0),
+            CombatRobotBundle::hero_target(HERO_TARGET_ID, Team::Blue),
+            SlapperInfantry,
+            ActiveSlapper,
+        ));
+    }
 
-    let mut main_camera = commands.spawn((
-        Camera3d::default(),
-        Camera {
-            // When Talos/ROS2 capture is enabled, the actual on-screen preview is a UI blit of the
-            // off-screen capture texture. Keep this camera inactive to avoid rendering twice.
-            #[cfg(any(feature = "ros2", feature = "talos"))]
-            is_active: false,
-            #[cfg(not(any(feature = "ros2", feature = "talos")))]
-            is_active: config.preview.enabled,
-            // clear_color: ClearColorConfig::Custom(Color::BLACK),
-            ..default()
-        },
-        Projection::Perspective(PerspectiveProjection {
-            fov: config.camera.fov.to_radians(),
-            near: 0.1,
-            far: 500000000.0,
-            ..default()
-        }),
-        Tonemapping::None,
-        Msaa::Off,
-        Transform::from_xyz(0.0, 10.0, 15.0).looking_at(Vec3::new(0.0, 0.0, 0.0), Vec3::Y),
-        MainCamera {
-            follow_offset: Vec3::from_array(config.camera.follow_offset),
-        },
-    ));
-    if cfg!(target_os = "macos") && config.render.metalfx_temporal {
-        main_camera.insert(MetalFxTemporalUpscaling {
-            scale_factor: config.render.metalfx_scale,
-            frame_generation: config.render.metalfx_frame_generation,
-            reset: true,
-        });
-    } else if config.render.main_camera_fxaa {
-        main_camera.insert(Fxaa::default());
+    if training.is_none() {
+        let mut main_camera = commands.spawn((
+            Camera3d::default(),
+            Camera {
+                // When Talos/ROS2 capture is enabled, the actual on-screen preview is a UI blit of the
+                // off-screen capture texture. Keep this camera inactive to avoid rendering twice.
+                #[cfg(any(feature = "ros2", feature = "talos"))]
+                is_active: false,
+                #[cfg(not(any(feature = "ros2", feature = "talos")))]
+                is_active: config.preview.enabled,
+                // clear_color: ClearColorConfig::Custom(Color::BLACK),
+                ..default()
+            },
+            Projection::Perspective(PerspectiveProjection {
+                fov: config.camera.fov.to_radians(),
+                near: 0.1,
+                far: 500000000.0,
+                ..default()
+            }),
+            Tonemapping::None,
+            Msaa::Off,
+            Transform::from_xyz(0.0, 10.0, 15.0).looking_at(Vec3::new(0.0, 0.0, 0.0), Vec3::Y),
+            MainCamera {
+                follow_offset: Vec3::from_array(config.camera.follow_offset),
+            },
+        ));
+        if cfg!(target_os = "macos") && config.render.metalfx_temporal {
+            main_camera.insert(MetalFxTemporalUpscaling {
+                scale_factor: config.render.metalfx_scale,
+                frame_generation: config.render.metalfx_frame_generation,
+                reset: true,
+            });
+        } else if config.render.main_camera_fxaa {
+            main_camera.insert(Fxaa::default());
+        }
+        if config.debug.egui {
+            main_camera.insert(PrimaryEguiContext);
+        }
+        #[cfg(any(feature = "ros2", feature = "talos"))]
+        main_camera.insert(crate::capture::CaptureSource);
     }
-    if config.debug.egui {
-        main_camera.insert(PrimaryEguiContext);
-    }
-    #[cfg(any(feature = "ros2", feature = "talos"))]
-    main_camera.insert(crate::capture::CaptureSource);
 }
 
 pub fn setup_ground(
@@ -262,6 +287,7 @@ pub fn setup_vehicle(
     root_query: Query<(
         Entity,
         &Infantry,
+        &RobotIdentity,
         Option<&Controlled>,
         Option<&ActiveSlapper>,
     )>,
@@ -273,7 +299,16 @@ pub fn setup_vehicle(
     if root_query.get(root).is_err() {
         return;
     }
-    let (root, infantry, is_local, is_active) = root_query.get(root).unwrap();
+    let (root, infantry, identity, is_local, is_active) = root_query.get(root).unwrap();
+    // Imported asset nodes already exist at WorldInstanceReady. Ownership is attached before
+    // ScanArmor constructs armor roots, and does not depend on mutable sticker selections.
+    let member = RobotMember {
+        root,
+        id: identity.id,
+    };
+    query.children.iter_descendants(root).for_each(|entity| {
+        commands.entity(entity).insert(member);
+    });
     let team = infantry.team;
     let config = infantry.config;
     let is_local = is_local.is_some();
@@ -290,7 +325,7 @@ pub fn setup_vehicle(
             }
         });
     }
-    let vehicle_body_collision_layers = GameLayer::vehicle_body_collision_layers(is_local);
+    let vehicle_body_collision_layers = GameLayer::vehicle_motion_collision_layers(is_local);
     let vehicle_armor_collision_layers = GameLayer::vehicle_armor_collision_layers(is_local);
 
     commands.entity(root).insert((
@@ -312,6 +347,19 @@ pub fn setup_vehicle(
         AngularDamping(50.0),
     ));
 
+    // The original support cylinder (radius 0.2593615 m) encloses some armor whose GLB
+    // mounting radii are 0.204–0.277 m. Do not use that broad proxy for bullet blocking.
+    // This 0.17 m inner core is a training geometry approximation, not an RM rule value.
+    commands.spawn((
+        Name::new("CombatBodyCore"),
+        ChildOf(root),
+        member,
+        Transform::from_xyz(0.0, -0.115649, 0.0),
+        Collider::cylinder(0.17, 0.231298),
+        ColliderDensity(0.0),
+        GameLayer::vehicle_body_collision_layers(is_local),
+    ));
+
     query.children.iter_descendants(root).for_each(|e| {
         commands.entity(e).insert(vehicle_armor_collision_layers);
     });
@@ -324,15 +372,19 @@ pub fn setup_vehicle(
     ));
     let gimbal = iter.exact("GIMBAL").one().unwrap();
     commands.entity(gimbal).insert(InfantryGimbal::default());
+    // Every available barrel belongs to its robot; only the controlled camera is special.
+    let q = query.of(gimbal).flatten();
+    if let Some(muzzle) = q.clone().exact("SHOT_DIRECTION").one() {
+        commands.entity(muzzle).insert(InfantryLaunchOffset);
+    }
     if is_local {
-        let q = query.of(gimbal).flatten();
-        commands
-            .entity(q.clone().exact("SHOT_DIRECTION").one().unwrap())
-            .insert(InfantryLaunchOffset);
         commands
             .entity(q.exact("CAM_DIRECTION").one().unwrap())
             .insert(InfantryViewOffset);
     }
+    commands.queue(move |world: &mut World| {
+        crate::robomaster::combat::reset::capture_initial_robot(world, root)
+    });
 }
 
 pub fn setup_collision(
@@ -363,4 +415,90 @@ pub fn setup_collision(
         }
     }
     commands.entity(events.entity).remove::<PreciousCollision>();
+}
+
+/// Construct static training outposts with the normal team armor appearance. The shared armor
+/// constructor handles plates; only the remaining structural meshes get obstacle colliders here,
+/// so hidden stickers, markers and alternate light strips cannot become invisible blockers.
+pub fn setup_training_outpost(
+    event: On<WorldInstanceReady>,
+    roots: Query<(), With<ScanOutpost>>,
+    children: Query<&Children>,
+    names: Query<&Name>,
+    meshes: Query<(), With<Mesh3d>>,
+    mut commands: Commands,
+) {
+    if !roots.contains(event.entity) {
+        return;
+    }
+    let mut armor_nodes = HashSet::new();
+    for entity in children.iter_descendants(event.entity) {
+        let Ok(name) = names.get(entity) else {
+            continue;
+        };
+        let team = match name.as_str() {
+            "OUTPOST_1" => Some(Team::Red),
+            "OUTPOST_2" => Some(Team::Blue),
+            _ => None,
+        };
+        if let Some(team) = team {
+            commands.entity(entity).insert(ScanArmor::new(
+                team,
+                ArmorSpec::Small(SmallArmorLabel::Outpost),
+            ));
+        }
+        if matches!(
+            name.as_str(),
+            "A_ARMOR_ROOT"
+                | "B_ARMOR_ROOT"
+                | "C_ARMOR_ROOT"
+                | "D_ARMOR_ROOT"
+                | "E_ARMOR_ROOT"
+                | "F_ARMOR_ROOT"
+        ) {
+            armor_nodes.insert(entity);
+            armor_nodes.extend(children.iter_descendants(entity));
+        }
+    }
+    for entity in children.iter_descendants(event.entity) {
+        commands
+            .entity(entity)
+            .insert(GameLayer::environment_collision_layers());
+        if meshes.contains(entity) && !armor_nodes.contains(&entity) {
+            commands
+                .entity(entity)
+                .insert(ColliderConstructor::TrimeshFromMeshWithConfig(
+                    TrimeshFlags::MERGE_DUPLICATE_VERTICES,
+                ));
+        }
+    }
+}
+
+/// Freeze the training obstacle in its unpowered asset state; no random rune animation is run.
+/// Hidden state variants do not receive colliders in the training scene.
+pub fn setup_training_power_rune(
+    event: On<WorldInstanceReady>,
+    roots: Query<(), With<PowerRuneRoot>>,
+    children: Query<&Children>,
+    names: Query<&Name>,
+    mut commands: Commands,
+) {
+    if !roots.contains(event.entity) {
+        return;
+    }
+    for entity in children.iter_descendants(event.entity) {
+        let Ok(name) = names.get(entity) else {
+            continue;
+        };
+        let name = name.as_str();
+        if name.ends_with("_R_POWERED")
+            || name.ends_with("_ACTIVE")
+            || name.ends_with("_ACTIVATED")
+            || name.ends_with("_COMPLETED")
+            || name.contains("_PADDING")
+            || name.contains("_LEGGING_PROGRESSING")
+        {
+            commands.entity(entity).insert(Visibility::Hidden);
+        }
+    }
 }
