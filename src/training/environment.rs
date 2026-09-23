@@ -309,6 +309,13 @@ impl Environment for PhysicalEnvironment {
         let visibility = measurements::validate_initial_visibility(&mut app)
             .map_err(|error| format!("invalid seed {seed}: {error}"))?;
         app.world_mut().resource_mut::<ScriptedTarget>().report["initial_visibility"] = visibility;
+        if let Some(visibility) = measurements::validate_rotation_visibility(&mut app)
+            .map_err(|error| format!("invalid seed {seed}: {error}"))?
+        {
+            let mut script = app.world_mut().resource_mut::<ScriptedTarget>();
+            script.report["rotation_visibility"] = visibility;
+            script.report["sampling_revision"] = json!(5);
+        }
         if let Some(config) = measurement_config {
             app.insert_resource(measurements::Measurements::new(config, seed));
             measurements::tick(&mut app)?;

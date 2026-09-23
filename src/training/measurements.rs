@@ -77,7 +77,22 @@ fn transform_data(t: RigidTransformF32) -> Value {
     json!({"translation":t.translation,"rotation_xyzw":[t.rotation.x,t.rotation.y,t.rotation.z,t.rotation.w]})
 }
 
+/// Virtual target yaw used only for reset admission. Neither ECS poses nor clocks are advanced.
+#[derive(Clone, Copy)]
+struct RotationProbe {
+    pivot_bevy: Vec3,
+    angle_rad: f32,
+}
+
+impl RotationProbe {
+    fn point_ros(self, point: Vec3) -> Vec3 {
+        let pivot = to_ros_translation(self.pivot_bevy);
+        pivot + Quat::from_rotation_z(self.angle_rad) * (point - pivot)
+    }
+}
+
 fn capture(
+    probe: In<Option<RotationProbe>>,
     config: Res<SimulationConfig>,
     clock: Res<ActuatorClock>,
     g: Res<GimbalActuatorTelemetry>,
@@ -201,16 +216,22 @@ fn capture(
     let mut detections = Vec::new();
     let mut evaluation = Vec::new();
     for plate in plates {
-        let center = Vec3::from_array(plate.world_t_armor.translation);
+        let mut center = Vec3::from_array(plate.world_t_armor.translation);
         let camera_center = Vec3::from_array(world_camera.translation);
-        let normal = quat_from_wire(plate.world_t_armor.rotation) * Vec3::Z;
+        let mut normal = quat_from_wire(plate.world_t_armor.rotation) * Vec3::Z;
+        let mut corners = plate.corners_world;
+        if let Some(probe) = probe.0 {
+            center = probe.point_ros(center);
+            normal = Quat::from_rotation_z(probe.angle_rad) * normal;
+            corners = corners.map(|p| probe.point_ros(Vec3::from_array(p)).to_array());
+        }
         let mut reason = "visible";
         let mut obstruction = Value::Null;
         if normal.dot((camera_center - center).normalize()) < 0.1 {
             reason = "back_facing";
         }
         let mut pixels = Vec::new();
-        for corner in plate.corners_world {
+        for corner in corners {
             let p = camera_inv * (Vec3::from_array(corner) - camera_center);
             if p.z <= 0.1 {
                 reason = "near_plane";
@@ -234,7 +255,7 @@ fn capture(
             // colliders in this all-or-nothing test made firing blind the tracker until impact.
             // Projectile physics/CCD and actual damage are unaffected by this optical filter.
             // The final centimeter tolerates the difference between ideal plate and collider skin.
-            for point in plate.corners_world.into_iter().chain([center.to_array()]) {
+            for point in corners.into_iter().chain([center.to_array()]) {
                 let end = ALIGN.transpose() * Vec3::from_array(point);
                 let delta = end - camera_pos;
                 let distance = delta.length();
@@ -247,9 +268,20 @@ fn capture(
                         {
                             return None;
                         }
+                        let mut position = t.translation();
+                        let mut rotation = t.rotation();
+                        // The target's own armor/core occluders rotate with the virtual plates.
+                        // Environment geometry and the physical world remain untouched.
+                        if let Some(probe) = probe.0
+                            && member.is_some_and(|m| m.id == TARGET_ROBOT_ID)
+                        {
+                            let yaw = Quat::from_rotation_y(probe.angle_rad);
+                            position = probe.pivot_bevy + yaw * (position - probe.pivot_bevy);
+                            rotation = yaw * rotation;
+                        }
                         c.cast_ray(
-                            t.translation(),
-                            t.rotation(),
+                            position,
+                            rotation,
                             camera_pos,
                             delta / distance,
                             (distance - 0.01).max(0.0),
@@ -266,7 +298,7 @@ fn capture(
             }
         }
         evaluation.push(
-            json!({"center_world":center.to_array(),"corners_world":plate.corners_world,
+            json!({"center_world":center.to_array(),"corners_world":corners,
             "ideal_corners_px":pixels,"visibility":reason,"occlusion":obstruction}),
         );
         if reason == "visible" {
@@ -297,7 +329,7 @@ fn capture(
 pub(super) fn validate_initial_visibility(app: &mut App) -> Result<Value, String> {
     let (frame, plates) = app
         .world_mut()
-        .run_system_once(capture)
+        .run_system_once_with(capture, None)
         .map_err(|e| e.to_string())??;
     let count = frame["detections"]
         .as_array()
@@ -315,6 +347,54 @@ pub(super) fn validate_initial_visibility(app: &mut App) -> Result<Value, String
         "criterion":"front_facing_all_corners_in_frame_center_and_corners_unoccluded"}))
 }
 
+/// Reject rotation spawns that only expose armor briefly at their initial phase (e.g. behind
+/// a raised platform edge). Reuse the detector's exact asset geometry and ray tests, with the
+/// initial camera fixed, at 5-degree intervals across a full revolution. This is a sampled
+/// geometric admission guard, not a guarantee of later tracking under noise or gimbal motion.
+pub(super) fn validate_rotation_visibility(app: &mut App) -> Result<Option<Value>, String> {
+    let script = app.world().resource::<super::scenario::ScriptedTarget>();
+    if !matches!(script.motion, super::scenario::Motion::Rotation { angular_speed_rad_s }
+        if angular_speed_rad_s != 0.0)
+    {
+        return Ok(None);
+    }
+    let pivot_bevy = script.initial.translation;
+    const PHASES: usize = 72;
+    let mut min_visible = 4;
+    for index in 0..PHASES {
+        let angle_rad = std::f32::consts::TAU * index as f32 / PHASES as f32;
+        let (frame, plates) = app
+            .world_mut()
+            .run_system_once_with(
+                capture,
+                Some(RotationProbe {
+                    pivot_bevy,
+                    angle_rad,
+                }),
+            )
+            .map_err(|e| e.to_string())??;
+        let count = frame["detections"]
+            .as_array()
+            .ok_or("missing rotation detections")?
+            .len();
+        if count == 0 {
+            let reasons: Vec<_> = plates
+                .iter()
+                .map(|p| json!({"visibility":p["visibility"], "occlusion":p["occlusion"]}))
+                .collect();
+            return Err(format!(
+                "rotation visibility failed at phase {} deg: no complete visible armor: {}",
+                index * 5,
+                json!(reasons)
+            ));
+        }
+        min_visible = min_visible.min(count);
+    }
+    Ok(Some(json!({"phase_samples":PHASES, "phase_step_deg":5,
+        "min_visible_armor_count":min_visible, "camera":"fixed_initial_pose",
+        "criterion":"front_facing_all_corners_in_frame_center_and_corners_unoccluded"})))
+}
+
 pub(super) fn tick(app: &mut App) -> Result<(), String> {
     if !app.world().contains_resource::<Measurements>() {
         return Ok(());
@@ -324,7 +404,7 @@ pub(super) fn tick(app: &mut App) -> Result<(), String> {
     if now as u128 * 30 >= index as u128 * 1_000_000_000 {
         let (mut frame, truth) = app
             .world_mut()
-            .run_system_once(capture)
+            .run_system_once_with(capture, None)
             .map_err(|e| e.to_string())??;
         let mut m = app.world_mut().resource_mut::<Measurements>();
         let delivery = now + m.config.latency_ms * 1_000_000;
