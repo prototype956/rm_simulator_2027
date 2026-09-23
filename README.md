@@ -169,6 +169,10 @@ Inspect 不重复交付，Reset 清空旧延迟队列。`evaluation.visual_truth
 省略时恢复原目标预设，不继承上一回合覆盖。配套 EvaluationSession 使用 100000 HP 标准靶，
 在统一预热后显式开启默认 30 s 规则基线窗口，并独立按 `[start_ns,end_ns)` 内实际出膛
 弹丸关联最终伤害；物理伤害累计不改写，结算超时不发布正式成绩。
+训练 Reset 还支持 `scenario.unlimited_heat=true`，双方热量保持 0、无热量锁定，保留
+射击间隔、供弹及其他机械约束。省略或 false 使用正常热量规则，每次 Reset 独立选择，
+不影响普通仿真的默认规则。场景报告和机器人资源快照记录该开关；热量上限及冷却速率
+仍报告预设有限值，便于沿用现有观测编码。
 详细协议、时钟和限制见配套项目 `docs/phase2_measurements.md` 与 `docs/phase2_evaluation.md`；
 完整阶段二验收尚未完成。
 
@@ -200,8 +204,22 @@ cargo run --offline --no-default-features --features training \
 方向键环绕视角，`PageUp` / `PageDown` 拉近/拉远。生成期间保留上一幅画面并显示加载状态。
 `--scenario FILE.json` 可传入 Reset 的 scenario 对象；`--config` / `--assets` 指定配置和资源。
 `--first-person` 直接使用红车相机视角；窗口比例与配置图像一致，便于核对初始视野。
-此入口仅预览初始状态，不推进目标运动或开火，也不连接 Talos；训练服务器保持无渲染。
+未提供 `--replay` 时，此入口仅预览初始状态，不推进目标运动或开火，也不连接 Talos；训练服务器保持无渲染。
 可选 `--screenshot /tmp/training-preview.png` 只保存一次加载后的窗口截图。
+
+同一入口支持相邻 RL 项目生成的模型评估回放：
+
+```bash
+cargo run --offline --release --no-default-features --features training \
+  --example training_preview -- --replay /absolute/path/to/replay.json
+```
+
+回放模式读取版本化的 10 ms 状态和事件，不启动 `PhysicalEnvironment`，显示世界时间保持冻结。
+按空格暂停，`-`/`+` 调整 0.25、0.5、1、2 倍速，`R` 从头播放，末帧停留；相机键位沿用预览。
+画面显示真实云台、弹丸轨迹、受击标记与目标 HP，HUD 区分窗口内原始伤害和自然结算后的归属
+伤害。红色受击标记只定位受伤机器人，不表示精确撞击点。`--replay` 不与 `--seed`/`--scenario`
+组合；使用相同的 `--config`/`--assets` 重建场地和模型。RL 的 `training.view` 入口会自动传入
+记录中的配置、资源路径，并先检查仿真配置指纹。
 
 ### 单 NUC 调试
 

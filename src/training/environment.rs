@@ -204,6 +204,7 @@ impl Environment for PhysicalEnvironment {
         let scenario = Scenario::parse(scenario)?;
         let measurement_config = scenario.measurements.clone();
         let target_hp = scenario.target_hp;
+        let unlimited_heat = scenario.unlimited_heat;
         let mut config = self.config.clone();
         config.gimbal_actuator.integration_hz = 1000.0;
         // Rebuild transactionally: fresh physics/contact, request, RNG and asset-instance state.
@@ -221,6 +222,7 @@ impl Environment for PhysicalEnvironment {
                 Rotation(prepared.controlled_initial.rotation),
             ));
         let mut script = prepared.target;
+        script.report["unlimited_heat"] = json!(unlimited_heat);
         if let Some(hp) = target_hp {
             script.report["target_hp_override"] = json!(hp);
         }
@@ -275,6 +277,9 @@ impl Environment for PhysicalEnvironment {
                     }
                 }
                 let mut state = RobotCombatState::new(rules);
+                if unlimited_heat {
+                    state.heat = HeatState::unlimited(Duration::ZERO);
+                }
                 state.shooter.mechanics = old.shooter.mechanics;
                 state.allowance = old.allowance.clone();
                 *old = state;

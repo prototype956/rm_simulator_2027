@@ -14,6 +14,7 @@ const ROUND_LOCK_MARGIN: u64 = 100;
 #[derive(Reflect, Clone, Debug, Default)]
 pub struct HeatState {
     current_tenths: u64,
+    unlimited: bool,
     pub cooling_locked: bool,
     pub round_locked: bool,
     /// Last nominal cooling deadline, not the time of the most recent rendered frame.
@@ -31,6 +32,18 @@ impl HeatState {
             last_cooling_at: now,
             ..default()
         }
+    }
+
+    /// Explicit episode mode: no heat accumulation or thermal locks, with finite telemetry.
+    pub fn unlimited(now: Duration) -> Self {
+        Self {
+            unlimited: true,
+            ..Self::new(now)
+        }
+    }
+
+    pub fn is_unlimited(&self) -> bool {
+        self.unlimited
     }
 
     /// Heat in referee units. All arithmetic and limit comparisons remain integer based.
@@ -72,6 +85,9 @@ impl HeatState {
     }
 
     fn add_shot(&mut self, heat_limit: u32) {
+        if self.unlimited {
+            return;
+        }
         self.current_tenths = self.current_tenths.saturating_add(SHOT_HEAT_TENTHS);
         let limit = u64::from(heat_limit);
         self.cooling_locked |= self.current_tenths > limit * 10;
@@ -103,6 +119,10 @@ impl HeatState {
         rate: u32,
         mut changed: impl FnMut(Duration, HeatSnapshot, HeatSnapshot),
     ) {
+        if self.unlimited {
+            self.last_cooling_at = now;
+            return;
+        }
         while let Some(tick) = self.last_cooling_at.checked_add(COOLING_PERIOD)
             && tick <= now
         {
@@ -201,6 +221,9 @@ pub(super) fn cool_robot_heat(world: &mut World) {
 pub(super) fn add_shot_heat(world: &mut World, root: Entity, at: Duration) {
     let id = world.get::<RobotIdentity>(root).unwrap().id;
     let mut state = world.get_mut::<RobotCombatState>(root).unwrap();
+    if state.heat.is_unlimited() {
+        return;
+    }
     let limit = state.rules.heat_limit;
     let before = state.heat.snapshot();
     state.heat.add_shot(limit);

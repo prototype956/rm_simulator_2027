@@ -1,4 +1,4 @@
-//! Optional initial-state viewer. A real headless Reset supplies every displayed robot pose.
+//! Initial-state preview and recorded policy replay, both driven by real training state.
 //! The display world stays frozen; its rendering and keyboard input never step training physics.
 use avian3d::prelude::*;
 use bevy::core_pipeline::tonemapping::Tonemapping;
@@ -28,12 +28,21 @@ use daedalus::training::protocol::Environment;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+#[path = "training_preview/replay.rs"]
+mod replay;
 
 #[derive(Parser)]
 struct Args {
     #[arg(long, default_value_t = 17)]
     seed: u64,
+    /// Replay a recorded policy evaluation without starting a physical environment.
+    #[arg(long, conflicts_with_all = ["seed", "scenario"])]
+    replay: Option<PathBuf>,
+    /// Optional model role shown in the window title and replay HUD.
+    #[arg(long, requires = "replay")]
+    label: Option<String>,
     #[arg(long, default_value = "config.toml")]
     config: PathBuf,
     #[arg(long, default_value = "assets")]
@@ -64,6 +73,8 @@ struct Preview {
     first_person: bool,
     screenshot: Option<PathBuf>,
     loaded_frames: usize,
+    replay: Option<replay::Replay>,
+    last_ui_frame: Instant,
 }
 
 #[derive(Component)]
@@ -79,20 +90,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let scenario = args.scenario.map_or(Ok(json!({})), |path| {
         serde_json::from_slice::<Value>(&std::fs::read(path)?).map_err(std::io::Error::other)
     })?;
+    let mut replay = args.replay.as_deref().map(replay::Replay::load).transpose()?;
+    if let (Some(record), Some(label)) = (replay.as_mut(), args.label) {
+        record.set_label(label);
+    }
+    let window_title = replay.as_ref().map_or_else(
+        || "Training initial-state preview".into(), replay::Replay::title,
+    );
+    let initial = replay.as_ref().map(replay::Replay::snapshot);
+    let is_replay = replay.is_some();
     let (requests, work) = unbounded();
     let (results, replies) = unbounded();
-    let worker_config = config.clone();
-    let worker_assets = assets.clone();
-    std::thread::spawn(move || {
-        let mut environment = PhysicalEnvironment::new(worker_config, worker_assets);
-        for (index, seed) in work.iter().enumerate() {
-            let result = environment.reset(index as u64 + 1, seed, &scenario);
-            if results.send((seed, result)).is_err() {
-                break;
+    if !is_replay {
+        let worker_config = config.clone();
+        let worker_assets = assets.clone();
+        std::thread::spawn(move || {
+            let mut environment = PhysicalEnvironment::new(worker_config, worker_assets);
+            for (index, seed) in work.iter().enumerate() {
+                let result = environment.reset(index as u64 + 1, seed, &scenario);
+                if results.send((seed, result)).is_err() {
+                    break;
+                }
             }
-        }
-    });
-    requests.send(args.seed)?;
+        });
+        requests.send(args.seed)?;
+    }
 
     let resolution = (config.capture.color.width, config.capture.color.height);
     App::new()
@@ -104,7 +126,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
                 .set(WindowPlugin {
                     primary_window: Some(Window {
-                        title: "Training initial-state preview".into(),
+                        title: window_title,
                         resolution: resolution.into(),
                         resizable: false,
                         present_mode: PresentMode::AutoVsync,
@@ -139,7 +161,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             replies,
             seed: args.seed,
             busy: true,
-            pending: None,
+            pending: initial,
             current: None,
             status: "Loading real training Reset...".into(),
             orbit: 0.65,
@@ -148,6 +170,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             first_person: args.first_person,
             screenshot: args.screenshot,
             loaded_frames: 0,
+            replay,
+            last_ui_frame: Instant::now(),
         })
         .add_systems(Startup, (setup, setup_view))
         .add_observer(setup_vehicle)
@@ -217,8 +241,13 @@ fn setup_view(mut commands: Commands, config: Res<SimulationConfig>) {
     ));
 }
 
-fn controls(keys: Res<ButtonInput<KeyCode>>, time: Res<Time<Real>>, mut preview: ResMut<Preview>) {
-    let dt = time.delta_secs().min(0.1);
+fn controls(keys: Res<ButtonInput<KeyCode>>, mut preview: ResMut<Preview>) {
+    // ManualDuration(ZERO) also freezes Bevy's Time<Real>. UI playback uses a separate
+    // host clock; it never modifies any clock consumed by the display-world physics.
+    let now = Instant::now();
+    let elapsed = now.duration_since(preview.last_ui_frame).as_secs_f64();
+    preview.last_ui_frame = now;
+    let dt = (elapsed as f32).min(0.1);
     for (key, delta) in [(KeyCode::ArrowLeft, -1.0), (KeyCode::ArrowRight, 1.0)] {
         if keys.pressed(key) {
             preview.orbit += delta * dt;
@@ -238,6 +267,12 @@ fn controls(keys: Res<ButtonInput<KeyCode>>, time: Res<Time<Real>>, mut preview:
         preview.first_person = !preview.first_person;
     }
     if preview.busy {
+        return;
+    }
+    if let Some(replay) = &mut preview.replay {
+        if replay.controls(&keys, elapsed) {
+            preview.pending = Some(replay.snapshot());
+        }
         return;
     }
     let seed = if keys.just_pressed(KeyCode::KeyN) {
@@ -303,12 +338,21 @@ fn apply_snapshot(
         position.0 = transform.translation;
         rotation.0 = transform.rotation;
     }
-    let initial = &data["evaluation"]["scenario"]["initial_gimbal"];
+    let initial = if preview.replay.is_some() {
+        &data["feedback"]
+    } else {
+        &data["evaluation"]["scenario"]["initial_gimbal"]
+    };
     actuator.initialize(
         initial["yaw_rad"].as_f64().unwrap(),
         initial["pitch_rad"].as_f64().unwrap(),
         &clock,
     );
+    if preview.replay.is_some() {
+        preview.current = Some(data);
+        preview.busy = false;
+        return;
+    }
     let report = &data["evaluation"]["scenario"];
     let repeated = preview.current.as_ref().is_some_and(|old| {
         old["evaluation"]["scenario"] == *report
@@ -414,6 +458,10 @@ fn view_camera(
 }
 
 fn describe_scene(preview: Res<Preview>, mut text: Single<&mut Text, With<PreviewText>>) {
+    if let Some(replay) = &preview.replay {
+        text.0 = replay.hud();
+        return;
+    }
     let mut detail = String::new();
     if let Some(data) = &preview.current {
         let s = &data["evaluation"]["scenario"];
@@ -452,6 +500,9 @@ fn describe_scene(preview: Res<Preview>, mut text: Single<&mut Text, With<Previe
 
 /// Observer-only markers make the two physical spawn points visible from a distance.
 fn mark_robots(preview: Res<Preview>, mut gizmos: Gizmos) {
+    if let Some(replay) = &preview.replay {
+        replay.draw(&mut gizmos);
+    }
     if preview.first_person {
         return;
     }

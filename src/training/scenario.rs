@@ -80,6 +80,9 @@ impl Motion {
 pub struct Scenario {
     /// Training-only standard-target HP override; omitted preserves the combat preset.
     pub target_hp: Option<u32>,
+    /// Training-only mode for both robots; omitted preserves normal heat rules.
+    #[serde(default)]
+    pub unlimited_heat: bool,
     pub measurements: Option<super::measurements::MeasurementConfig>,
     /// Optional Bevy world X/Z position; omitted samples the imported ground bounds.
     controlled_position_xz_m: Option<[f32; 2]>,

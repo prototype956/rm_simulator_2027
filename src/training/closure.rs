@@ -50,6 +50,7 @@ pub(super) fn resources(state: &RobotCombatState) -> Value {
     });
     json!({"hp":state.life.hp,"life_status":format!("{:?}",state.life.status),
         "heat":state.heat.current(),"heat_limit":state.rules.heat_limit,
+        "unlimited_heat":state.heat.is_unlimited(),
         "cooling_per_second":state.rules.cooling_per_second,
         "cooling_locked":state.heat.cooling_locked,"round_locked":state.heat.round_locked,
         "allowance":allowance,"pending_feed":pending,
