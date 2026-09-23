@@ -100,13 +100,16 @@ fn capture(
         ),
         With<Controlled>,
     >,
-    colliders: Query<(
-        &Collider,
-        &GlobalTransform,
-        Option<&RobotMember>,
-        Option<&Name>,
-        Option<&RobotIdentity>,
-    )>,
+    colliders: Query<
+        (
+            &Collider,
+            &GlobalTransform,
+            Option<&RobotMember>,
+            Option<&Name>,
+            Option<&RobotIdentity>,
+        ),
+        Without<crate::robomaster::prelude::Projectile>,
+    >,
 ) -> Result<(Value, Vec<Value>), String> {
     let (root, _, _, _) = robots
         .iter()
@@ -226,7 +229,10 @@ fn capture(
             pixels.push([u, v]);
         }
         if reason == "visible" {
-            // Conservative collision-geometry visibility: require center and all four corners.
+            // Conservative structure visibility: require center and all four corners.
+            // Small, fast projectiles do not hide a whole armor detection. Including their
+            // colliders in this all-or-nothing test made firing blind the tracker until impact.
+            // Projectile physics/CCD and actual damage are unaffected by this optical filter.
             // The final centimeter tolerates the difference between ideal plate and collider skin.
             for point in plate.corners_world.into_iter().chain([center.to_array()]) {
                 let end = ALIGN.transpose() * Vec3::from_array(point);

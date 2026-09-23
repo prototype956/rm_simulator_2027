@@ -439,6 +439,11 @@ fn inspect_app(app: &mut App) -> Result<Value, String> {
             "rotation_xyzw":muzzle.rotation().to_array()});
     let frame = w.resource::<CombatTelemetry>().frame;
     let r = frame.self_referee;
+    // Local weapon feedback runs at the physics cadence, independently of the 10 Hz referee.
+    // Export only own interlocks, never combat counters or target state into the control channel.
+    let weapon = frame.robots[..frame.robot_count as usize]
+        .iter()
+        .find(|robot| robot.robot_id == CONTROLLED_ROBOT_ID.0);
     let mut robots: Vec<_> = w.query::<(&RobotIdentity, &Transform, &RobotCombatState, &LinearVelocity, &AngularVelocity)>().iter(w)
             .map(|(id,t,s,v,a)| json!({"robot_id":id.id.0,"position_bevy_m":t.translation.to_array(),
                 "rotation_xyzw":t.rotation.to_array(),"velocity_bevy_m_s":v.0.to_array(),"angular_velocity_bevy_rad_s":a.0.to_array(),"hp":s.life.hp,"actual_shots":s.shooter.actual_shots,
@@ -450,6 +455,8 @@ fn inspect_app(app: &mut App) -> Result<Value, String> {
     let settlement = settlement::data(w);
     Ok(json!({
         "settlement":settlement,"visual_frames":[],
+        "self_weapon":{"version":1,"valid":weapon.is_some(),"sample_ns":frame.sim_time_ns,
+            "fire_blocks":weapon.map(|robot| robot.fire_blocks & 0xe0).unwrap_or(0xe0)},
         "capabilities":{"physical_step":true,"visual_measurements":w.contains_resource::<measurements::Measurements>(),"scripted_motion":true},
         "feedback":{"valid":g.valid,"timestamp_ns":g.state_timestamp_ns,"yaw_rad":g.actual_yaw_rad,
             "pitch_rad":g.actual_pitch_rad,"yaw_velocity_rad_s":g.yaw_velocity_rad_s,

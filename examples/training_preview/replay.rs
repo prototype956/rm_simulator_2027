@@ -39,6 +39,41 @@ fn check_vector(value: &Value, count: usize) -> bool {
     })
 }
 
+pub(super) fn validate_data(data: &Value) -> Result<(), String> {
+    for axis in ["yaw_rad", "pitch_rad"] {
+        if !data["feedback"][axis].as_f64().is_some_and(f64::is_finite) {
+            return Err("invalid replay gimbal feedback".into());
+        }
+    }
+    let evaluation = &data["evaluation"];
+    let robots = evaluation["robots"].as_array().ok_or("missing replay robots")?;
+    if robots.len() != 2 || ![1, 2].iter().all(|id| {
+        robots.iter().filter(|r| r["robot_id"].as_u64() == Some(*id)).count() == 1
+    }) {
+        return Err("replay requires the controlled and target robot".into());
+    }
+    for robot in robots {
+        if !check_vector(&robot["position_bevy_m"], 3)
+            || !check_vector(&robot["rotation_xyzw"], 4)
+            || robot["hp"].as_u64().is_none()
+        {
+            return Err("invalid replay robot pose/HP".into());
+        }
+    }
+    let projectiles = evaluation["projectiles"].as_array().ok_or("missing replay projectiles")?;
+    for projectile in projectiles {
+        if projectile["projectile_id"].as_u64().is_none()
+            || !check_vector(&projectile["position_bevy_m"], 3)
+        {
+            return Err("invalid replay projectile".into());
+        }
+    }
+    if data["events"].as_array().is_none() {
+        return Err("missing replay events".into());
+    }
+    Ok(())
+}
+
 impl Replay {
     pub(super) fn load(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let record: Recording = serde_json::from_slice(&std::fs::read(path)?)?;
@@ -56,37 +91,7 @@ impl Replay {
                 return Err("replay is missing a 10 ms physical frame".into());
             }
             previous = Some(frame.time_ns);
-            for axis in ["yaw_rad", "pitch_rad"] {
-                if !frame.data["feedback"][axis].as_f64().is_some_and(f64::is_finite) {
-                    return Err("invalid replay gimbal feedback".into());
-                }
-            }
-            let evaluation = &frame.data["evaluation"];
-            let robots = evaluation["robots"].as_array().ok_or("missing replay robots")?;
-            if robots.len() != 2 || ![1, 2].iter().all(|id| {
-                robots.iter().filter(|r| r["robot_id"].as_u64() == Some(*id)).count() == 1
-            }) {
-                return Err("replay requires the controlled and target robot".into());
-            }
-            for robot in robots {
-                if !check_vector(&robot["position_bevy_m"], 3)
-                    || !check_vector(&robot["rotation_xyzw"], 4)
-                    || robot["hp"].as_u64().is_none()
-                {
-                    return Err("invalid replay robot pose/HP".into());
-                }
-            }
-            let projectiles = evaluation["projectiles"].as_array().ok_or("missing replay projectiles")?;
-            for projectile in projectiles {
-                if projectile["projectile_id"].as_u64().is_none()
-                    || !check_vector(&projectile["position_bevy_m"], 3)
-                {
-                    return Err("invalid replay projectile".into());
-                }
-            }
-            if frame.data["events"].as_array().is_none() {
-                return Err("missing replay events".into());
-            }
+            validate_data(&frame.data).map_err(std::io::Error::other)?;
         }
         Ok(Self { record, index: 0, elapsed: 0.0, speed: 2, paused: false, label: "MODEL REPLAY".into() })
     }
@@ -167,34 +172,39 @@ impl Replay {
     }
 
     pub(super) fn draw(&self, gizmos: &mut Gizmos) {
-        let frame = &self.record.frames[self.index];
-        let yellow = Color::srgb(1.0, 0.85, 0.1);
-        let mut previous = HashMap::new();
-        // Short trails keep fast projectiles visible even when several 10 ms frames share a render.
-        for sample in &self.record.frames[self.index.saturating_sub(15)..=self.index] {
-            for projectile in sample.data["evaluation"]["projectiles"].as_array().unwrap() {
-                let id = projectile["projectile_id"].as_u64().unwrap();
-                let p = super::vector(&projectile["position_bevy_m"]);
-                if let Some(last) = previous.insert(id, p) {
-                    gizmos.line(last, p, yellow);
-                }
+        draw_samples(self.record.frames[self.index.saturating_sub(20)..=self.index].iter().map(|f| &f.data), gizmos);
+    }
+}
+
+pub(super) fn draw_samples<'a>(samples: impl IntoIterator<Item = &'a Value>, gizmos: &mut Gizmos) {
+    let samples: Vec<&Value> = samples.into_iter().collect();
+    let Some(frame) = samples.last() else { return; };
+    let yellow = Color::srgb(1.0, 0.85, 0.1);
+    let mut previous = HashMap::new();
+    // Short trails keep fast projectiles visible even when several 10 ms frames share a render.
+    for sample in &samples[samples.len().saturating_sub(16)..] {
+        for projectile in sample["evaluation"]["projectiles"].as_array().unwrap() {
+            let id = projectile["projectile_id"].as_u64().unwrap();
+            let p = super::vector(&projectile["position_bevy_m"]);
+            if let Some(last) = previous.insert(id, p) {
+                gizmos.line(last, p, yellow);
             }
         }
-        for projectile in frame.data["evaluation"]["projectiles"].as_array().unwrap() {
-            gizmos.sphere(Isometry3d::from_translation(super::vector(&projectile["position_bevy_m"])), 0.025, yellow);
-        }
-        // Damage events have robot identity, not an impact position. Mark the damaged robot.
-        for sample in &self.record.frames[self.index.saturating_sub(20)..=self.index] {
-            for event in sample.data["events"].as_array().unwrap() {
-                if event["kind"].as_str() != Some("damage_applied") || event["data"]["actual"].as_u64() == Some(0) {
-                    continue;
-                }
-                if let Some(robot) = frame.data["evaluation"]["robots"].as_array().unwrap().iter()
-                    .find(|r| r["robot_id"] == event["data"]["target"])
-                {
-                    gizmos.sphere(Isometry3d::from_translation(super::vector(&robot["position_bevy_m"]) + Vec3::Y * 0.3),
-                                  0.45, Color::srgb(1.0, 0.2, 0.1));
-                }
+    }
+    for projectile in frame["evaluation"]["projectiles"].as_array().unwrap() {
+        gizmos.sphere(Isometry3d::from_translation(super::vector(&projectile["position_bevy_m"])), 0.025, yellow);
+    }
+    // Damage events have robot identity, not an impact position. Mark the damaged robot.
+    for sample in &samples {
+        for event in sample["events"].as_array().unwrap() {
+            if event["kind"].as_str() != Some("damage_applied") || event["data"]["actual"].as_u64() == Some(0) {
+                continue;
+            }
+            if let Some(robot) = frame["evaluation"]["robots"].as_array().unwrap().iter()
+                .find(|r| r["robot_id"] == event["data"]["target"])
+            {
+                gizmos.sphere(Isometry3d::from_translation(super::vector(&robot["position_bevy_m"]) + Vec3::Y * 0.3),
+                              0.45, Color::srgb(1.0, 0.2, 0.1));
             }
         }
     }

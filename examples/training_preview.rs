@@ -1,5 +1,5 @@
 //! Initial-state preview and recorded policy replay, both driven by real training state.
-//! The display world stays frozen; its rendering and keyboard input never step training physics.
+//! The display world stays frozen; manual mode delegates Gym operations to Python.
 use avian3d::prelude::*;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::ecs::query::QueryData;
@@ -32,6 +32,8 @@ use std::time::{Duration, Instant};
 
 #[path = "training_preview/replay.rs"]
 mod replay;
+#[path = "training_preview/manual.rs"]
+mod manual;
 
 #[derive(Parser)]
 struct Args {
@@ -40,6 +42,9 @@ struct Args {
     /// Replay a recorded policy evaluation without starting a physical environment.
     #[arg(long, conflicts_with_all = ["seed", "scenario"])]
     replay: Option<PathBuf>,
+    /// Live Gym control over JSONL stdin/stdout. Launch via rmvision_rl.training.manual.
+    #[arg(long, conflicts_with_all = ["replay", "seed", "scenario", "label"])]
+    manual: bool,
     /// Optional model role shown in the window title and replay HUD.
     #[arg(long, requires = "replay")]
     label: Option<String>,
@@ -74,6 +79,7 @@ struct Preview {
     screenshot: Option<PathBuf>,
     loaded_frames: usize,
     replay: Option<replay::Replay>,
+    manual: Option<manual::Manual>,
     last_ui_frame: Instant,
 }
 
@@ -94,14 +100,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let (Some(record), Some(label)) = (replay.as_mut(), args.label) {
         record.set_label(label);
     }
-    let window_title = replay.as_ref().map_or_else(
+    let window_title = if args.manual { "RM manual Gym reward debugger".into() } else { replay.as_ref().map_or_else(
         || "Training initial-state preview".into(), replay::Replay::title,
-    );
+    ) };
     let initial = replay.as_ref().map(replay::Replay::snapshot);
     let is_replay = replay.is_some();
     let (requests, work) = unbounded();
     let (results, replies) = unbounded();
-    if !is_replay {
+    if !is_replay && !args.manual {
         let worker_config = config.clone();
         let worker_assets = assets.clone();
         std::thread::spawn(move || {
@@ -171,6 +177,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             screenshot: args.screenshot,
             loaded_frames: 0,
             replay,
+            manual: args.manual.then(manual::Manual::start),
             last_ui_frame: Instant::now(),
         })
         .add_systems(Startup, (setup, setup_view))
@@ -266,6 +273,10 @@ fn controls(keys: Res<ButtonInput<KeyCode>>, mut preview: ResMut<Preview>) {
     if keys.just_pressed(KeyCode::KeyC) {
         preview.first_person = !preview.first_person;
     }
+    if let Some(manual) = &mut preview.manual {
+        manual.controls(&keys);
+        return;
+    }
     if preview.busy {
         return;
     }
@@ -297,6 +308,12 @@ fn controls(keys: Res<ButtonInput<KeyCode>>, mut preview: ResMut<Preview>) {
 }
 
 fn receive_snapshot(mut preview: ResMut<Preview>) {
+    if let Some(manual) = &mut preview.manual {
+        if let Some(data) = manual.receive() {
+            preview.pending = Some(data);
+        }
+        return;
+    }
     if let Ok((seed, result)) = preview.replies.try_recv() {
         preview.seed = seed;
         match result {
@@ -338,7 +355,7 @@ fn apply_snapshot(
         position.0 = transform.translation;
         rotation.0 = transform.rotation;
     }
-    let initial = if preview.replay.is_some() {
+    let initial = if preview.replay.is_some() || preview.manual.is_some() {
         &data["feedback"]
     } else {
         &data["evaluation"]["scenario"]["initial_gimbal"]
@@ -348,7 +365,7 @@ fn apply_snapshot(
         initial["pitch_rad"].as_f64().unwrap(),
         &clock,
     );
-    if preview.replay.is_some() {
+    if preview.replay.is_some() || preview.manual.is_some() {
         preview.current = Some(data);
         preview.busy = false;
         return;
@@ -458,6 +475,10 @@ fn view_camera(
 }
 
 fn describe_scene(preview: Res<Preview>, mut text: Single<&mut Text, With<PreviewText>>) {
+    if let Some(manual) = &preview.manual {
+        text.0 = manual.hud();
+        return;
+    }
     if let Some(replay) = &preview.replay {
         text.0 = replay.hud();
         return;
@@ -500,6 +521,9 @@ fn describe_scene(preview: Res<Preview>, mut text: Single<&mut Text, With<Previe
 
 /// Observer-only markers make the two physical spawn points visible from a distance.
 fn mark_robots(preview: Res<Preview>, mut gizmos: Gizmos) {
+    if let Some(manual) = &preview.manual {
+        manual.draw(&mut gizmos);
+    }
     if let Some(replay) = &preview.replay {
         replay.draw(&mut gizmos);
     }
