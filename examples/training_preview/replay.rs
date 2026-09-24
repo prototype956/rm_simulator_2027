@@ -156,10 +156,14 @@ impl Replay {
             || if frame.phase == "settlement_timed_out" { "INCOMPLETE".into() } else { "pending".into() },
             |d| format!("{d:.0}"),
         );
+        let selection = if m["selected_slot"].is_null() { String::new() } else {
+            format!("Selected slot: {} | Switches: {} | Action: {}\n",
+                    m["selected_slot"], m["slot_switches"], m["wire_action"])
+        };
         let robots = frame.data["evaluation"]["robots"].as_array().unwrap();
         let hp = robots.iter().find(|r| r["robot_id"].as_u64() == Some(2)).unwrap()["hp"].as_u64().unwrap();
         format!(
-            "{}\n{} | {:.2} s evaluation + {:.2} s settlement\nRaw window damage: {:.0} | Attributed damage: {} (observed {:.0})\nWindow shots: {} | Damaging rounds: {} | Hit rate: {} | After-window shots: {}\nTarget HP: {} | End: {}\n{} | {:.2}x | Space pause | -/+ speed | R replay | C camera\nArrows orbit | PgUp/PgDn zoom | Close window to exit",
+            "{}\n{} | {:.2} s evaluation + {:.2} s settlement\nRaw window damage: {:.0} | Attributed damage: {} (observed {:.0})\nWindow shots: {} | Damaging rounds: {} | Hit rate: {} | After-window shots: {}\nTarget HP: {} | End: {}\n{}{} | {:.2}x | Space pause | -/+ speed | R replay | C camera\nArrows orbit | PgUp/PgDn zoom | Close window to exit",
             self.title(),
             frame.phase, m["evaluation_time_ns"].as_f64().unwrap_or(0.0) / 1e9,
             m["settlement_time_ns"].as_f64().unwrap_or(0.0) / 1e9,
@@ -167,6 +171,7 @@ impl Replay {
             m["eligible_damage"].as_f64().unwrap_or(0.0), shots, hits, rate,
             m["excluded_shots"].as_u64().unwrap_or(0), hp,
             m["end_reason"].as_str().unwrap_or("running"),
+            selection,
             if self.paused { "Paused" } else { "Playing" }, SPEEDS[self.speed],
         )
     }

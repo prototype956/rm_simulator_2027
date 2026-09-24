@@ -20,6 +20,7 @@ pub(super) struct Manual {
     next_step: Instant,
     frame: Option<Value>,
     history: VecDeque<Value>,
+    desired_slot: Option<u8>, // UI intent; the controller reports the actual selected slot separately.
 }
 
 #[cfg(test)]
@@ -31,7 +32,7 @@ mod tests {
         let (results, replies) = bounded(1);
         (Manual { requests, replies, busy: false, resetting: false, queued: None, running: false,
                   ended: false, fault: None, notice: String::new(), next_step: Instant::now(),
-                  frame: None, history: VecDeque::new() }, work, results)
+                  frame: None, history: VecDeque::new(), desired_slot: None }, work, results)
     }
 
     fn response(step: u64, ended: bool) -> Result<Value, String> {
@@ -140,6 +141,25 @@ mod tests {
     }
 
     #[test]
+    fn joint_slot_keys_and_fire_use_nine_actions_without_queuing_shots() {
+        let (mut manual, requests, results) = controller();
+        manual.running = true;
+        manual.frame = Some(json!({"metrics": {"action_mode": "joint"}}));
+        let mut keys = ButtonInput::default();
+        keys.press(KeyCode::Digit3);
+        keys.press(KeyCode::KeyF);
+        manual.controls(&keys);
+        assert_eq!(requests.recv().unwrap(), Operation::Step(6));
+        results.send(Ok(json!({"data": {}, "metrics": {"step": 1, "action_mode": "joint"}}))).unwrap();
+        manual.receive();
+        manual.next_step = Instant::now();
+        keys.clear();
+        keys.release(KeyCode::KeyF);
+        manual.controls(&keys);
+        assert_eq!(requests.recv().unwrap(), Operation::Step(5));
+    }
+
+    #[test]
     fn protocol_eof_and_bad_sequence_fail_and_preserve_last_frame() {
         assert!(read_reply(1, &mut io::Cursor::new("")).is_err());
         assert!(read_reply(1, &mut io::Cursor::new("{\"version\":1,\"id\":2,\"ok\":true}\n")).is_err());
@@ -208,7 +228,7 @@ impl Manual {
         let mut manual = Self {
             requests, replies, busy: false, resetting: false, queued: None, running: false, ended: false,
             fault: None, notice: "Warming up with firing disabled...".into(),
-            next_step: Instant::now(), frame: None, history: VecDeque::new(),
+            next_step: Instant::now(), frame: None, history: VecDeque::new(), desired_slot: None,
         };
         manual.send(Operation::Reset);
         manual
@@ -230,6 +250,7 @@ impl Manual {
         self.next_step = Instant::now() + Duration::from_millis(10);
         if op == Operation::Reset {
             self.resetting = true;
+            self.desired_slot = None;
             self.running = false;
             self.notice = "Warming up; previous frame retained until reset completes".into();
         }
@@ -256,6 +277,11 @@ impl Manual {
             }
             return;
         }
+        if self.frame.as_ref().is_some_and(|f| f["metrics"]["action_mode"] == "joint") {
+            for (slot, key) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4].iter().enumerate() {
+                if keys.just_pressed(*key) { self.desired_slot = Some(slot as u8); }
+            }
+        }
         if keys.just_pressed(KeyCode::Space) && self.fault.is_none() && !self.ended {
             self.running = !self.running;
             if !self.running {
@@ -277,7 +303,10 @@ impl Manual {
             } else if self.running && !self.ended && Instant::now() >= self.next_step {
                 // Sample the current key state only when submitting the next Gym step.
                 // Never queue shots while busy: a release must affect the next operation.
-                self.send(Operation::Step(u8::from(keys.pressed(KeyCode::KeyF))));
+                let fire = u8::from(keys.pressed(KeyCode::KeyF));
+                let joint = self.frame.as_ref().is_some_and(|f| f["metrics"]["action_mode"] == "joint");
+                let action = if joint { self.desired_slot.map_or(0, |slot| 1 + 2 * slot + fire) } else { fire };
+                self.send(Operation::Step(action));
             }
         }
     }
@@ -327,19 +356,23 @@ impl Manual {
                 || "Decision clock: OFF (10 ms opportunities)".into(),
                 |wait| format!("Decision clock: {} ms until next | Due NOW: {} | Stream: {}",
                     wait, m["decision_due_next"], m["clock_episode_stream"]));
+            let selection = if m["action_mode"] == "joint" {
+                format!("\nJoint | Desired slot: {} | Selected: {} | Switches: {} | Mask: {}",
+                        self.desired_slot.map_or_else(|| "--".into(), |slot| slot.to_string()), m["selected_slot"], m["slot_switches"], m["action_mask"])
+            } else { String::new() };
             format!(
-                "Episode {} | step {}/{} | {:.2} s\nStep reward: {:.0} | Total reward: {:.0} | Last nonzero: {}\n{}\nFire legal NOW: {} | Last input: {} | Masked: {}\nShot requested: {} | Accepted: {} | Actual launches: {}\nReject: {} | End: {} | Length: {}",
+                "Episode {} | step {}/{} | {:.2} s\nStep reward: {:.0} | Total reward: {:.0} | Last nonzero: {}\n{}\nFire legal NOW: {} | Last input: {} | Masked: {}\nShot requested: {} | Accepted: {} | Actual launches: {}\nReject: {} | End: {} | Length: {}{}",
                 m["episode"], m["step"], m["episode_steps"], m["time_s"].as_f64().unwrap_or(0.0),
                 m["reward"].as_f64().unwrap_or(0.0), m["cumulative_reward"].as_f64().unwrap_or(0.0), last, clock,
-                m["fire_legal_next"], if m["action"] == 1 { "FIRE" } else if m["action"] == 0 { "TRACK" } else { "RESET" },
+                m["fire_legal_next"], m["action"],
                 m["action_masked"], m["shot_requested"], m["shot_accepted"], m["actual_shots"],
                 if m["clock_masked"] == true { "waiting for decision clock" }
                     else if m["action_masked"] == true { "fire-control mask forbids fire" }
                     else { m["reject_reason"].as_str().unwrap_or("--") },
-                m["end_reason"].as_str().unwrap_or("--"), length,
+                m["end_reason"].as_str().unwrap_or("--"), length, selection,
             )
         });
-        format!("MANUAL GYM | {status}{}\n{detail}\n{}\nHold F to fire | Release F to track | Space pause/resume | R restart\nC camera | Arrows orbit | PgUp/PgDn zoom | Close to exit",
+        format!("MANUAL GYM | {status}{}\n{detail}\n{}\nJoint: 1-4 select plate | Hold F to fire | Release F to track | Space pause/resume | R restart\nC camera | Arrows orbit | PgUp/PgDn zoom | Close to exit",
                 if self.busy { " | BUSY" } else { "" }, self.fault.as_ref().unwrap_or(&self.notice))
     }
 
