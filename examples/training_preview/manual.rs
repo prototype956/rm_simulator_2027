@@ -21,6 +21,7 @@ pub(super) struct Manual {
     frame: Option<Value>,
     history: VecDeque<Value>,
     desired_slot: Option<u8>, // UI intent; the controller reports the actual selected slot separately.
+    auto_policy: bool,
 }
 
 #[cfg(test)]
@@ -32,7 +33,7 @@ mod tests {
         let (results, replies) = bounded(1);
         (Manual { requests, replies, busy: false, resetting: false, queued: None, running: false,
                   ended: false, fault: None, notice: String::new(), next_step: Instant::now(),
-                  frame: None, history: VecDeque::new(), desired_slot: None }, work, results)
+                  frame: None, history: VecDeque::new(), desired_slot: None, auto_policy: false }, work, results)
     }
 
     fn response(step: u64, ended: bool) -> Result<Value, String> {
@@ -198,7 +199,7 @@ fn read_reply(id: u64, input: &mut impl BufRead) -> Result<Value, String> {
 }
 
 impl Manual {
-    pub(super) fn start() -> Self {
+    pub(super) fn start(auto_policy: bool) -> Self {
         let (requests, work) = bounded(1);
         let (results, replies) = bounded(1);
         let write_errors = results.clone();
@@ -228,7 +229,7 @@ impl Manual {
         let mut manual = Self {
             requests, replies, busy: false, resetting: false, queued: None, running: false, ended: false,
             fault: None, notice: "Warming up with firing disabled...".into(),
-            next_step: Instant::now(), frame: None, history: VecDeque::new(), desired_slot: None,
+            next_step: Instant::now(), frame: None, history: VecDeque::new(), desired_slot: None, auto_policy,
         };
         manual.send(Operation::Reset);
         manual
@@ -275,6 +276,11 @@ impl Manual {
             if [KeyCode::Space, KeyCode::KeyF, KeyCode::KeyN, KeyCode::KeyR].iter().any(|k| keys.just_pressed(*k)) {
                 self.notice = "Warming up: input not accepted until Reset completes".into();
             }
+            return;
+        }
+        if self.auto_policy && keys.just_pressed(KeyCode::ArrowUp) {
+            self.running = false;
+            self.enqueue(Operation::Reset);
             return;
         }
         if self.frame.as_ref().is_some_and(|f| f["metrics"]["action_mode"] == "joint") {
@@ -372,8 +378,10 @@ impl Manual {
                 m["end_reason"].as_str().unwrap_or("--"), length, selection,
             )
         });
-        format!("MANUAL GYM | {status}{}\n{detail}\n{}\nJoint: 1-4 select plate | Hold F to fire | Release F to track | Space pause/resume | R restart\nC camera | Arrows orbit | PgUp/PgDn zoom | Close to exit",
-                if self.busy { " | BUSY" } else { "" }, self.fault.as_ref().unwrap_or(&self.notice))
+        format!("{} | {status}{}\n{detail}\n{}\n{}\nC camera | Arrows orbit (↑ next seed in live policy mode) | PgUp/PgDn zoom | Close to exit",
+                if self.auto_policy { "LIVE POLICY" } else { "MANUAL GYM" },
+                if self.busy { " | BUSY" } else { "" }, self.fault.as_ref().unwrap_or(&self.notice),
+                if self.auto_policy { "↑ next seed | Space pause/resume" } else { "Joint: 1-4 select plate | Hold F to fire | Release F to track | Space pause/resume | R restart" })
     }
 
     pub(super) fn draw(&self, gizmos: &mut Gizmos) {

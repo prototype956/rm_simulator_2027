@@ -45,6 +45,9 @@ struct Args {
     /// Live Gym control over JSONL stdin/stdout. Launch via rmvision_rl.training.manual.
     #[arg(long, conflicts_with_all = ["replay", "seed", "scenario", "label"])]
     manual: bool,
+    /// In manual mode, continuously advance and let the Python controller choose actions.
+    #[arg(long, requires = "manual")]
+    auto_policy: bool,
     /// Optional model role shown in the window title and replay HUD.
     #[arg(long, requires = "replay")]
     label: Option<String>,
@@ -177,7 +180,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             screenshot: args.screenshot,
             loaded_frames: 0,
             replay,
-            manual: args.manual.then(manual::Manual::start),
+            manual: args.manual.then(|| manual::Manual::start(args.auto_policy)),
             last_ui_frame: Instant::now(),
         })
         .add_systems(Startup, (setup, setup_view))
@@ -281,8 +284,10 @@ fn controls(keys: Res<ButtonInput<KeyCode>>, mut preview: ResMut<Preview>) {
         return;
     }
     if let Some(replay) = &mut preview.replay {
-        if replay.controls(&keys, elapsed) {
-            preview.pending = Some(replay.snapshot());
+        match replay.controls(&keys, elapsed) {
+            Ok(true) => preview.pending = Some(replay.snapshot()),
+            Ok(false) => {}
+            Err(error) => preview.status = error,
         }
         return;
     }
