@@ -12,6 +12,21 @@
 
 </div>
 
+## 文档导航
+
+| 内容 | 文档 |
+|---|---|
+| 多车型环境、启动与操作 | [环境使用](docs/MULTIROBOT_FIRE_CONTROL.md) |
+| 联盟赛地图、规则与近似 | [RMUL 2027](docs/RMUL_2027.md) |
+| 发射、热量、战亡与 Talos 协议 | [战斗机制](docs/COMBAT_PHASE1.md) |
+| 轮腿模型、装甲、动作与校准 | [轮腿](docs/WHEEL_LEG.md) |
+| 训练 Reset、出生及场景参数 | [训练场景](docs/TRAINING_SCENARIOS.md) |
+| 回归测试、预览及维护工具 | [测试与工具](docs/TESTING.md) |
+
+## 2027 联盟赛射击环境
+
+独立地图、步兵/哨兵配置与规则说明见 [RMUL 2027](docs/RMUL_2027.md)。使用 `--config configs/rmul_2027_infantry.toml` 或 `--config configs/rmul_2027_sentry.toml` 启动；省略参数保持旧场景。
+
 ## 🚀 功能亮点
 
 * 🎯 **全要素战场环境仿真**
@@ -239,7 +254,7 @@ taskset -c 8-15 nice -n 5 ./target/release/daedalus
 HUD 显示受控机器人的真实热量、上限及冷却速率；红色 `COOLING LOCK` 表示锁定至零热量，
 `ROUND LOCK` 表示整局锁定（零热量也不会消失）。`HEAT OK` 只表示没有热量锁定，
 不保证机械间隔等其他发射条件满足。HUD 与帮助文字只叠加在窗口，不进入 Talos 图像。
-视觉进程建议绑定到 P 核 `0-7`。规则与验收说明见 [第一阶段战斗机制](docs/COMBAT_PHASE1.md)。
+视觉进程建议绑定到 P 核 `0-7`。规则与协议说明见 [战斗机制](docs/COMBAT_PHASE1.md)。
 
 ---
 
@@ -332,3 +347,7 @@ HUD 显示受控机器人的真实热量、上限及冷却速率；红色 `COOLI
 选板每 10 ms 更新，射击机会仍由环境按 50–100 ms 采样。未选板时等待，R 换场景后重新按数字键。
 HUD 显示期望/实际槽位、动作掩码、切板数与奖励；旧两动作配置继续只用 F 和传统选板。
 回放 HUD 也显示实际槽位、切板数和九动作协议编号，旧回放缺少这些字段时隐藏选板诊断行。
+
+## 多车型火控环境
+
+启动、车型参数与近似范围见 [多车型火控环境](docs/MULTIROBOT_FIRE_CONTROL.md)。

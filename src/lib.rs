@@ -3,10 +3,13 @@ pub mod capture;
 mod capture_geometry;
 pub mod components;
 pub mod config;
+pub mod field;
 pub mod gimbal_actuator;
 pub mod handler;
 pub mod metalfx;
 pub mod robomaster;
+pub mod robot_motion;
+pub mod robots;
 #[cfg(feature = "ros2")]
 pub mod ros2;
 pub mod setup;
@@ -18,3 +21,5 @@ pub mod telemetry;
 #[cfg(feature = "training")]
 pub mod training;
 pub mod util;
+pub mod wheel_leg_traversal;
+pub mod wheel_leg_urdf;

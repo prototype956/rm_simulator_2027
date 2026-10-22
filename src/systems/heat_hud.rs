@@ -152,7 +152,10 @@ fn setup_window_hud(
 /// Read the root's physical truth, not a replay of shots or a locally integrated heat value.
 /// Status is thermal permission only; it must not imply that ammo/mechanics allow a shot.
 fn update_heat_hud(
-    robots: Query<&RobotCombatState, (With<Controlled>, With<RobotIdentity>)>,
+    robots: Query<(&RobotCombatState, &RobotIdentity), With<Controlled>>,
+    clock: Res<Time<Fixed>>,
+    rigs: Query<(&crate::robots::RobotProfile, &crate::robots::RobotRig), With<Controlled>>,
+    traversal: Query<&crate::wheel_leg_traversal::TraversalDiagnostics, With<Controlled>>,
     mut texts: Query<(&HeatText, &mut Text, &mut TextColor)>,
     mut fills: Query<(&mut Node, &mut BackgroundColor), With<HeatFill>>,
 ) {
@@ -162,9 +165,9 @@ fn update_heat_hud(
     let state = robots
         .single()
         .ok()
-        .filter(|state| state.shooter.kind != ShooterKind::None && state.rules.heat_limit > 0);
+        .filter(|(state, _)| state.shooter.kind != ShooterKind::None && state.rules.heat_limit > 0);
     let (value, cooling, status, fraction, color) = match state {
-        Some(state) => {
+        Some((state, identity)) => {
             let heat = state.heat.current();
             let status = if state.heat.round_locked {
                 "ROUND LOCK"
@@ -176,8 +179,35 @@ fn update_heat_hud(
                 "HEAT OK"
             };
             (
-                format!("HEAT {:.1} / {}", heat, state.rules.heat_limit),
-                format!("COOLING {}/s", state.rules.cooling_per_second),
+                format!(
+                    "{:?} {} HP {}/{}  AMMO {}\nHEAT {:.1} / {}",
+                    identity.role,
+                    rigs.single().map_or(String::new(), |(p, r)| format!(
+                        "{p:?} fold={:.0}% lift={:.0}mm {}",
+                        r.fold * 100.,
+                        r.lift_m * 1000.,
+                        r.blocked.as_deref().unwrap_or("")
+                    )),
+                    state.life.hp,
+                    state.rules.max_hp,
+                    match state.allowance {
+                        crate::robomaster::combat::FireAllowance::Unlimited => "INF".to_owned(),
+                        crate::robomaster::combat::FireAllowance::Limited(n) => n.to_string(),
+                    },
+                    heat,
+                    state.rules.heat_limit
+                ),
+                format!(
+                    "COOL {}/s  DEF {:.1}s  TUN {:.1}s\n{}",
+                    state.effective_cooling(clock.elapsed()),
+                    state.league.defense_left(clock.elapsed()),
+                    state.league.cooling_left(clock.elapsed()),
+                    traversal.single().map_or("".into(), |d| format!(
+                        "{} {}",
+                        d.phase,
+                        d.reason.as_deref().unwrap_or("")
+                    ))
+                ),
                 status,
                 (heat / f64::from(state.rules.heat_limit)).clamp(0.0, 1.0) as f32,
                 if state.heat.is_locked()

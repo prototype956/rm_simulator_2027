@@ -3,15 +3,20 @@ mod capture;
 mod capture_geometry;
 mod components;
 mod config;
+mod field;
 mod gimbal_actuator;
 mod handler;
 mod metalfx;
 mod robomaster;
+mod robot_motion;
+mod robots;
 mod setup;
 mod statistic;
 mod systems;
 mod telemetry;
 mod util;
+mod wheel_leg_traversal;
+mod wheel_leg_urdf;
 
 #[cfg(feature = "ros2")]
 mod ros2;
@@ -128,9 +133,17 @@ fn should_enable_talos_plugin(app: &App) -> bool {
     !ros_capture_active || force_talos_capture
 }
 
+#[derive(clap::Parser)]
+struct Args {
+    #[arg(long, default_value = "config.toml")]
+    config: std::path::PathBuf,
+}
+
 fn main() {
-    let config = SimulationConfig::load().unwrap_or_else(|error| {
-        eprintln!("Cannot apply config.toml: {error}");
+    use clap::Parser;
+    let args = Args::parse();
+    let config = SimulationConfig::load_from(&args.config).unwrap_or_else(|error| {
+        eprintln!("Cannot apply {}: {error}", args.config.display());
         std::process::exit(1);
     });
     let present_mode = present_mode_from_config(&config.window.present_mode).unwrap_or_else(|| {
@@ -141,6 +154,8 @@ fn main() {
         PresentMode::AutoNoVsync
     });
     let mut app = App::new();
+    app.insert_resource(crate::config::ConfigPath(args.config));
+    app.insert_resource(config.clone());
     app.add_plugins((
         DefaultPlugins
             .set(WindowPlugin {

@@ -1,14 +1,20 @@
+use crate::field::SceneConfig;
 use crate::robomaster::combat::CombatConfig;
 use avian3d::prelude::SubstepCount;
 use bevy::prelude::*;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Deserialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Resource, Deserialize, Reflect, Clone)]
 #[reflect(Resource)]
 pub struct SimulationConfig {
+    /// Opt-in articulated geometry; omitted preserves legacy asset/collision behavior.
+    #[serde(default)]
+    pub robots: Option<crate::robots::RobotProfiles>,
+    #[serde(default)]
+    pub scene: SceneConfig,
     #[serde(default)]
     pub combat: CombatConfig,
     #[serde(default)]
@@ -365,9 +371,22 @@ impl Default for LivoxRosConfig {
 
 impl SimulationConfig {
     pub fn load() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let content = std::fs::read_to_string("config.toml")?;
+        Self::load_from(Path::new("config.toml"))
+    }
+    pub fn load_from(path: &Path) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let content = std::fs::read_to_string(path)?;
         let config: Self = toml::from_str(&content)?;
         config.projectile.validate_shooter()?;
+        if config.robots.is_some() && !config.scene.is_league() {
+            return Err("robot profiles require the RMUL 2027 scene".into());
+        }
+        if config
+            .robots
+            .as_ref()
+            .is_some_and(|r| r.controlled == crate::robots::RobotProfile::HeavyTarget)
+        {
+            return Err("heavy_target is enemy-only".into());
+        }
         Ok(config)
     }
 }
@@ -377,6 +396,8 @@ impl Default for SimulationConfig {
         Self::load().unwrap_or_else(|e| {
             warn!("Failed to load config.toml: {}, using defaults", e);
             Self {
+                robots: None,
+                scene: SceneConfig::default(),
                 combat: CombatConfig::default(),
                 window: WindowConfig::default(),
                 debug: DebugConfig::default(),
@@ -412,6 +433,9 @@ impl Default for SimulationConfig {
     }
 }
 
+#[derive(Resource, Clone)]
+pub struct ConfigPath(pub PathBuf);
+
 #[derive(Resource)]
 pub struct ConfigWatcher {
     _watcher: RecommendedWatcher,
@@ -422,7 +446,18 @@ pub struct ConfigPlugin;
 
 impl Plugin for ConfigPlugin {
     fn build(&self, app: &mut App) {
-        let config = SimulationConfig::default();
+        let path = app
+            .world()
+            .get_resource::<ConfigPath>()
+            .cloned()
+            .unwrap_or_else(|| ConfigPath(PathBuf::from("config.toml")));
+        let config = app
+            .world()
+            .get_resource::<SimulationConfig>()
+            .cloned()
+            .unwrap_or_else(|| {
+                SimulationConfig::load_from(&path.0).expect("invalid configuration")
+            });
 
         // Set up file watcher using crossbeam-channel for thread safety
         let (tx, rx): (
@@ -438,11 +473,10 @@ impl Plugin for ConfigPlugin {
 
         match watcher_result {
             Ok(mut watcher) => {
-                if let Err(e) = watcher.watch(Path::new("config.toml"), RecursiveMode::NonRecursive)
-                {
+                if let Err(e) = watcher.watch(&path.0, RecursiveMode::NonRecursive) {
                     warn!("Failed to watch config.toml: {}", e);
                 } else {
-                    info!("Config hot-reload enabled for config.toml");
+                    info!("Config hot-reload enabled for {}", path.0.display());
                     app.insert_resource(ConfigWatcher {
                         _watcher: watcher,
                         receiver: rx,
@@ -455,13 +489,15 @@ impl Plugin for ConfigPlugin {
             }
         }
 
-        app.insert_resource(config)
+        app.insert_resource(path)
+            .insert_resource(config)
             .register_type::<SimulationConfig>();
     }
 }
 
 fn config_hot_reload(
     mut config: ResMut<SimulationConfig>,
+    path: Res<ConfigPath>,
     watcher: Option<Res<ConfigWatcher>>,
     mut substeps: Option<ResMut<SubstepCount>>,
     mut fixed_time: Option<ResMut<Time<Fixed>>>,
@@ -473,8 +509,12 @@ fn config_hot_reload(
     // Non-blocking check for file changes
     while let Ok(Ok(event)) = watcher.receiver.try_recv() {
         if event.kind.is_modify() {
-            match SimulationConfig::load() {
-                Ok(new_config) => {
+            match SimulationConfig::load_from(&path.0) {
+                Ok(mut new_config) => {
+                    if new_config.scene != config.scene {
+                        warn!("Map changes require restart; keeping the running scene");
+                        new_config.scene = config.scene.clone();
+                    }
                     if new_config.combat != config.combat
                         || new_config.projectile.speed != config.projectile.speed
                         || new_config.projectile.cooldown != config.projectile.cooldown

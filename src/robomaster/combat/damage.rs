@@ -1,5 +1,6 @@
 //! RMUL 2026 V1.2.0 §3.3.1.1, table 3-7 (printed page 29): 17 mm = 20 HP.
-//! Training simplification: first armor contact counts, without speed/impulse/debounce gates.
+//! Legacy keeps first-contact counting. RMUL 2027 explicitly enables signed normal-speed
+//! and per-plate detection gates with pre-solver geometry/velocity snapshots.
 
 use super::shooting::{ProjectileShot, cancel_robot_requests};
 use super::{LifeStatus, RobotCombatState, RobotId, RobotIdentity, RobotMember};
@@ -77,7 +78,7 @@ pub struct RobotDied {
 }
 
 #[derive(Resource, Default)]
-struct Impacts(Vec<CollisionStart>);
+struct Impacts(Vec<(CollisionStart, Option<Vec3>)>);
 
 /// Keep each mesh's previous handle for the future scene reset. Never alter shared GLB assets.
 #[derive(Component)]
@@ -90,6 +91,7 @@ pub struct DamagePlugin;
 impl Plugin for DamagePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Impacts>()
+            .init_resource::<super::league::ImpactSamples>()
             .add_message::<ArmorContact>()
             .add_message::<DamageApplied>()
             .add_message::<RobotDied>()
@@ -143,17 +145,22 @@ fn collect_impacts(
                     .get(hit.entity)
                     .ok()
                     .and_then(|(_, _, body)| body.map(|b| b.body));
-                impacts.0.push(CollisionStart {
-                    collider1: entity,
-                    collider2: hit.entity,
-                    body1: Some(entity),
-                    body2: body,
-                });
+                impacts.0.push((
+                    CollisionStart {
+                        collider1: entity,
+                        collider2: hit.entity,
+                        body1: Some(entity),
+                        body2: body,
+                    },
+                    Some(hit.point1),
+                ));
             }
         }
         start.0 = position.0;
     }
-    impacts.0.extend(events.read().copied());
+    impacts
+        .0
+        .extend(events.read().copied().map(|event| (event, None)));
 }
 
 /// Resolve after Avian finishes its contact observers. This preserves rune processing order
@@ -161,8 +168,8 @@ fn collect_impacts(
 /// the first reported contact wins; no sub-step time-of-impact ordering is claimed.
 fn resolve_impacts(world: &mut World) {
     let impacts = std::mem::take(&mut world.resource_mut::<Impacts>().0);
-    for impact in impacts {
-        resolve_impact(world, impact);
+    for (impact, point) in impacts {
+        resolve_impact(world, impact, point);
     }
 }
 
@@ -175,7 +182,7 @@ fn ancestor_with<T: Component>(world: &World, mut entity: Entity) -> Option<Enti
     }
 }
 
-fn resolve_impact(world: &mut World, impact: CollisionStart) {
+fn resolve_impact(world: &mut World, impact: CollisionStart, point: Option<Vec3>) {
     let candidate = |collider, body: Option<Entity>| {
         body.filter(|body| world.get::<ProjectileShot>(*body).is_some())
             .or_else(|| world.get::<ProjectileShot>(collider).map(|_| collider))
@@ -249,7 +256,18 @@ fn resolve_impact(world: &mut World, impact: CollisionStart) {
             at.as_secs_f64()
         );
         if let (Some(root), Some(identity)) = (target, identity) {
-            apply_damage(world, root, identity.id, shooter.map(|s| s.0), shot, at);
+            let league = world
+                .get::<RobotCombatState>(root)
+                .is_some_and(|s| s.ruleset == super::RuleSet::Rmul2027);
+            let armor_root = ancestor_with::<ArmorRoot>(world, other);
+            let accepted = if league {
+                league_hit(world, projectile, armor_root, point, at)
+            } else {
+                true
+            };
+            if accepted {
+                apply_damage(world, root, identity.id, shooter.map(|s| s.0), shot, at);
+            }
         }
     }
     // Rune activation remains a separate mechanism, never robot HP damage.
@@ -290,7 +308,12 @@ fn apply_damage(
     if state.life.status != LifeStatus::Alive || state.life.hp == 0 {
         return;
     }
-    let actual = state.life.hp.min(ARMOR_DAMAGE_17MM);
+    let nominal = if state.ruleset == super::RuleSet::Rmul2027 && state.league.defense_active(at) {
+        15
+    } else {
+        ARMOR_DAMAGE_17MM
+    };
+    let actual = state.life.hp.min(nominal);
     state.life.hp -= actual;
     state.damage.damage_taken += u64::from(actual);
     let remaining_hp = state.life.hp;
@@ -428,5 +451,352 @@ fn extinguish_lights(
 pub(super) fn clear_round_impacts(world: &mut World) {
     if let Some(mut impacts) = world.get_resource_mut::<Impacts>() {
         impacts.0.clear();
+    }
+}
+
+fn physical_matrix(world: &World, entity: Entity) -> Mat4 {
+    let local = world.get::<Transform>(entity).copied().unwrap_or_default();
+    if world.get::<RigidBody>(entity).is_some() {
+        if let (Some(p), Some(r)) = (world.get::<Position>(entity), world.get::<Rotation>(entity)) {
+            return Mat4::from_scale_rotation_translation(local.scale, r.0, p.0);
+        }
+    }
+    let parent = world
+        .get::<ChildOf>(entity)
+        .map(|p| physical_matrix(world, p.parent()))
+        .unwrap_or(Mat4::IDENTITY);
+    parent * local.to_matrix()
+}
+fn strip_geometry(world: &World, entity: Entity, up: Vec3) -> Option<(Vec3, Vec3)> {
+    let data = world.get::<crate::robomaster::prelude::VertexData>(entity)?;
+    if data.points.is_empty() {
+        return None;
+    }
+    let matrix = physical_matrix(world, entity);
+    let points: Vec<_> = data
+        .points
+        .iter()
+        .map(|p| matrix.transform_point3(*p))
+        .collect();
+    let lo = points
+        .iter()
+        .map(|p| p.dot(up))
+        .fold(f32::INFINITY, f32::min);
+    let hi = points
+        .iter()
+        .map(|p| p.dot(up))
+        .fold(f32::NEG_INFINITY, f32::max);
+    let band = ((hi - lo) * 0.1).max(1e-4);
+    let average = |top: bool| {
+        let p: Vec<_> = points
+            .iter()
+            .copied()
+            .filter(|p| {
+                if top {
+                    p.dot(up) >= hi - band
+                } else {
+                    p.dot(up) <= lo + band
+                }
+            })
+            .collect();
+        p.iter().sum::<Vec3>() / p.len() as f32
+    };
+    let a = average(true);
+    let b = average(false);
+    Some(((a + b) * 0.5, (a - b).try_normalize()?))
+}
+pub(super) fn cache_impact_samples(world: &mut World) {
+    use super::league::{ArticulationSample, BodySample, ImpactSamples, PlateSample};
+    use crate::robomaster::prelude::{ArmorParts, Side};
+    if !world
+        .query::<&RobotCombatState>()
+        .iter(world)
+        .any(|s| s.ruleset == super::RuleSet::Rmul2027)
+    {
+        return;
+    }
+    let bodies: std::collections::HashMap<_, _> = world
+        .query::<(Entity, &Position, &LinearVelocity, Option<&AngularVelocity>)>()
+        .iter(world)
+        .map(|(e, p, v, w)| {
+            (
+                e,
+                BodySample {
+                    position: p.0,
+                    linear: v.0,
+                    angular: w.map_or(Vec3::ZERO, |w| w.0),
+                },
+            )
+        })
+        .collect();
+    let armors: Vec<_> = world
+        .query::<(Entity, &ArmorParts)>()
+        .iter(world)
+        .map(|(e, p)| (e, p.vertex(Side::Left), p.vertex(Side::Right)))
+        .collect();
+    let mut plates = std::collections::HashMap::new();
+    let mut articulation = std::collections::HashMap::new();
+    let now = world.resource::<Time<Fixed>>().elapsed();
+    for (entity, left, right) in armors {
+        let Some(owner) = ancestor_with::<RobotIdentity>(world, entity) else {
+            continue;
+        };
+        let Some(body) = bodies.get(&owner) else {
+            continue;
+        };
+        let up = world
+            .get::<Rotation>(owner)
+            .map_or(Vec3::Y, |r| r.0 * Vec3::Y);
+        let (Some((l, ly)), Some((r, ry))) = (
+            strip_geometry(world, left, up),
+            strip_geometry(world, right, up),
+        ) else {
+            continue;
+        };
+        let center = (l + r) * 0.5;
+        let Some(x) = (r - l).try_normalize() else {
+            continue;
+        };
+        let Some(y) = (ly + ry - x * (ly + ry).dot(x)).try_normalize() else {
+            continue;
+        };
+        let mut normal = x.cross(y).normalize();
+        if normal.dot(center - body.position) < 0. {
+            normal = -normal;
+        }
+        let mut angular = body.angular;
+        // BASE can rotate independently of the rigid body's pose.
+        let mut parent = Some(entity);
+        while let Some(e) = parent {
+            if let Some(chassis) = world.get::<InfantryChassis>(e) {
+                angular += up * chassis.yaw_velocity;
+            }
+            if e == owner {
+                break;
+            }
+            parent = world.get::<ChildOf>(e).map(|p| p.parent());
+        }
+        let mut velocity = body.linear
+            + angular.cross(center - body.position)
+            + crate::robots::plate_articulation_velocity(world, owner);
+        if world
+            .get::<crate::robots::RobotRig>(owner)
+            .is_some_and(|r| r.urdf.is_some())
+        {
+            let root_rotation = world.get::<Rotation>(owner).map_or(Quat::IDENTITY, |r| r.0);
+            let local_center = root_rotation.inverse() * (center - body.position);
+            let local_rotation =
+                root_rotation.inverse() * Quat::from_mat3(&Mat3::from_cols(x, y, x.cross(y)));
+            let current = ArticulationSample {
+                at: now,
+                center: local_center,
+                rotation: local_rotation,
+            };
+            if let Some(old) = world.resource::<ImpactSamples>().articulation.get(&entity) {
+                let dt = now.saturating_sub(old.at).as_secs_f32();
+                if dt > 0. && dt < 0.02 {
+                    let mut delta = local_rotation * old.rotation.inverse();
+                    if delta.w < 0. {
+                        delta = -delta;
+                    }
+                    let (axis, angle) = delta.to_axis_angle();
+                    angular = body.angular + root_rotation * (axis * angle / dt);
+                    velocity = body.linear
+                        + body.angular.cross(center - body.position)
+                        + root_rotation * ((local_center - old.center) / dt);
+                }
+            }
+            articulation.insert(entity, current);
+        }
+        plates.insert(
+            entity,
+            PlateSample {
+                center,
+                normal,
+                velocity,
+                angular,
+            },
+        );
+    }
+    let mut samples = world.resource_mut::<ImpactSamples>();
+    samples.bodies = bodies;
+    samples.plates = plates;
+    samples.articulation = articulation;
+}
+fn league_hit(
+    world: &mut World,
+    projectile: Entity,
+    armor: Option<Entity>,
+    point: Option<Vec3>,
+    at: Duration,
+) -> bool {
+    use super::league::{ImpactSamples, accepts_impact};
+    let outcome = (|| {
+        let armor = armor.ok_or("missing_armor_root")?;
+        let samples = world.resource::<ImpactSamples>();
+        let shot = samples
+            .bodies
+            .get(&projectile)
+            .ok_or("missing_pre_solve_projectile")?;
+        let plate = samples
+            .plates
+            .get(&armor)
+            .ok_or("missing_pre_solve_armor")?;
+        let point = point.unwrap_or(plate.center);
+        let target_velocity = plate.velocity + plate.angular.cross(point - plate.center);
+        if (shot.position - plate.center).dot(plate.normal) < -0.001 {
+            return Err("back_face");
+        }
+        let speed = -(shot.linear - target_velocity).dot(plate.normal);
+        accepts_impact(speed, samples.last_detected.get(&armor).copied(), at)?;
+        Ok(armor)
+    })();
+    match outcome {
+        Ok(armor) => {
+            world
+                .resource_mut::<ImpactSamples>()
+                .last_detected
+                .insert(armor, at);
+            true
+        }
+        Err(reason) => {
+            info!("impact rejected projectile={projectile:?} reason={reason}");
+            super::reset::record_event(world, at, format!("impact_rejected reason={reason}"));
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::league::{BodySample, ImpactSamples, PlateSample};
+    use super::*;
+
+    fn fixture() -> (World, Entity, Entity, Entity) {
+        let mut world = World::new();
+        let projectile = world.spawn_empty().id();
+        let a = world.spawn_empty().id();
+        let b = world.spawn_empty().id();
+        let mut samples = ImpactSamples::default();
+        samples.bodies.insert(
+            projectile,
+            BodySample {
+                position: Vec3::Z,
+                linear: -25. * Vec3::Z,
+                angular: Vec3::ZERO,
+            },
+        );
+        let plate = PlateSample {
+            center: Vec3::ZERO,
+            normal: Vec3::Z,
+            velocity: Vec3::ZERO,
+            angular: Vec3::ZERO,
+        };
+        samples.plates.insert(a, plate);
+        samples.plates.insert(b, plate);
+        world.insert_resource(samples);
+        (world, projectile, a, b)
+    }
+    #[test]
+    fn relative_translation_rotation_and_glancing_incidence() {
+        let (mut world, projectile, a, _) = fixture();
+        let t = Duration::from_secs(1);
+        // A receding plate leaves exactly 12 m/s inward: the strict threshold rejects it.
+        world
+            .resource_mut::<ImpactSamples>()
+            .plates
+            .get_mut(&a)
+            .unwrap()
+            .velocity = -13. * Vec3::Z;
+        assert!(!league_hit(&mut world, projectile, Some(a), None, t));
+        // An approaching plate increases inward speed.
+        world
+            .resource_mut::<ImpactSamples>()
+            .plates
+            .get_mut(&a)
+            .unwrap()
+            .velocity = 13. * Vec3::Z;
+        assert!(league_hit(&mut world, projectile, Some(a), None, t));
+        world.resource_mut::<ImpactSamples>().last_detected.clear();
+        let mut samples = world.resource_mut::<ImpactSamples>();
+        let plate = samples.plates.get_mut(&a).unwrap();
+        plate.velocity = Vec3::ZERO;
+        plate.angular = 13. * Vec3::Y;
+        drop(samples);
+        // At x=1, omega cross r is -13 Z, again leaving only 12 m/s.
+        assert!(!league_hit(
+            &mut world,
+            projectile,
+            Some(a),
+            Some(Vec3::X),
+            t
+        ));
+        world
+            .resource_mut::<ImpactSamples>()
+            .plates
+            .get_mut(&a)
+            .unwrap()
+            .angular = Vec3::ZERO;
+        world
+            .resource_mut::<ImpactSamples>()
+            .bodies
+            .get_mut(&projectile)
+            .unwrap()
+            .linear = Vec3::new(24., 0., -10.);
+        assert!(!league_hit(&mut world, projectile, Some(a), None, t));
+        world
+            .resource_mut::<ImpactSamples>()
+            .bodies
+            .get_mut(&projectile)
+            .unwrap()
+            .linear = -25. * Vec3::Z;
+        world
+            .resource_mut::<ImpactSamples>()
+            .bodies
+            .get_mut(&projectile)
+            .unwrap()
+            .position = -Vec3::Z;
+        assert!(!league_hit(&mut world, projectile, Some(a), None, t));
+    }
+    #[test]
+    fn detection_interval_is_per_plate_and_inclusive_at_50ms() {
+        let (mut world, projectile, a, b) = fixture();
+        let t = Duration::from_secs(1);
+        assert!(league_hit(&mut world, projectile, Some(a), None, t));
+        assert!(!league_hit(
+            &mut world,
+            projectile,
+            Some(a),
+            None,
+            t + Duration::from_millis(49)
+        ));
+        assert!(league_hit(
+            &mut world,
+            projectile,
+            Some(b),
+            None,
+            t + Duration::from_millis(49)
+        ));
+        assert!(league_hit(
+            &mut world,
+            projectile,
+            Some(a),
+            None,
+            t + Duration::from_millis(50)
+        ));
+        assert!(!league_hit(
+            &mut world,
+            projectile,
+            Some(a),
+            None,
+            t + Duration::from_millis(99)
+        ));
+        assert!(league_hit(
+            &mut world,
+            projectile,
+            Some(a),
+            None,
+            t + Duration::from_millis(101)
+        ));
     }
 }

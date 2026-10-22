@@ -235,6 +235,7 @@ fn apply_requested_reset(world: &mut World) {
     }
     super::shooting::clear_round_requests(world);
     super::damage::clear_round_impacts(world);
+    super::league::clear_detection_history(world);
     clear_messages::<shooting::ShotFired>(world);
     clear_messages::<shooting::FireRequestResult>(world);
     clear_messages::<damage::ArmorContact>(world);
@@ -293,7 +294,14 @@ fn apply_requested_reset(world: &mut World) {
         }
         let identity = *world.get::<RobotIdentity>(root).unwrap();
         let bundle = if identity.role == CombatRole::HeroTarget {
-            CombatRobotBundle::hero_target(identity.id, identity.team)
+            if world.get::<crate::robots::RobotProfile>(root)
+                == Some(&crate::robots::RobotProfile::HeavyTarget)
+            {
+                CombatRobotBundle::heavy_target(identity.id, identity.team)
+                    .with_ruleset(config.combat.ruleset)
+            } else {
+                CombatRobotBundle::hero_target(identity.id, identity.team)
+            }
         } else {
             let preset = if world.get::<Controlled>(root).is_some() {
                 config.combat.controlled
@@ -306,6 +314,7 @@ fn apply_requested_reset(world: &mut World) {
                 config.combat.target_allowance
             };
             CombatRobotBundle::training(identity.id, identity.team, preset)
+                .with_ruleset(config.combat.ruleset)
                 .with_allowance(allowance)
                 .with_shooter_config(&config.projectile)
         };
@@ -323,6 +332,15 @@ fn apply_requested_reset(world: &mut World) {
             .filter_map(|(e, m)| (m.root == root).then_some(e))
             .collect();
         for entity in members {
+            if let Some(mut root) = world.get_mut::<crate::robomaster::prelude::ArmorRoot>(entity) {
+                root.label = label;
+                if identity.role != CombatRole::HeroTarget {
+                    root.spec = crate::robomaster::prelude::ArmorSpec::Small(match label {
+                        ArmorLabel::Sentry => crate::robomaster::prelude::SmallArmorLabel::Sentry,
+                        _ => crate::robomaster::prelude::SmallArmorLabel::Three,
+                    });
+                }
+            }
             if let Some(mut armor) = world.get_mut::<Armor>(entity) {
                 armor.label = label;
             }
@@ -333,6 +351,36 @@ fn apply_requested_reset(world: &mut World) {
             }
         }
     }
+    let desired = config.robots.clone();
+    let rebuild = roots.iter().any(|root| {
+        let controlled = world.get::<Controlled>(*root).is_some();
+        let want = desired
+            .as_ref()
+            .map(|r| if controlled { r.controlled } else { r.target });
+        world.get::<crate::robots::RobotProfile>(*root).copied() != want
+    });
+    if rebuild {
+        for root in &roots {
+            world.despawn(*root);
+        }
+        world.resource_mut::<InitialScene>().0.clear();
+        let assets = world.resource::<AssetServer>().clone();
+        let headless = world.contains_resource::<crate::setup::HeadlessScene>();
+        crate::setup::spawn_combat_robots(&mut world.commands(), &assets, &config, headless);
+    } else {
+        crate::robots::reset_rigs(world);
+    }
+    let programs: Vec<_> = world
+        .query_filtered::<Entity, With<crate::robot_motion::RobotProgram>>()
+        .iter(world)
+        .collect();
+    for root in programs {
+        world
+            .entity_mut(root)
+            .remove::<crate::robot_motion::RobotProgram>()
+            .insert(RigidBody::Dynamic);
+    }
+
     if let Some(mut controller) = world.get_resource_mut::<ControllerState>() {
         controller.reset_round();
     }

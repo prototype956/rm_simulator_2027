@@ -481,7 +481,8 @@ fn keyboard_controller_active(keyboard: &ButtonInput<KeyCode>) -> bool {
         KeyCode::KeyF,
         KeyCode::KeyV,
     ];
-    const EDGE_KEYS: [KeyCode; 6] = [
+    const EDGE_KEYS: [KeyCode; 7] = [
+        KeyCode::F6,
         KeyCode::KeyG,
         KeyCode::Tab,
         KeyCode::F3,

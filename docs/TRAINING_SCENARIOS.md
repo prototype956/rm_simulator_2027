@@ -1,13 +1,44 @@
-# 训练出生场景
+# 训练场景与 Reset 参数
 
-`daedalus_training` 和 `training_preview` 使用同一个 `PhysicalEnvironment::reset`。
-非零匀速旋转靶使用 `sampling_revision=5`，其余场景仍为 4。相同版本、配置、资源、seed
-和 scenario 参数复现同一初始状态。
-revision 3 引入双方随机出生、中心能量机关及初始可见性检查；revision 4 恢复前哨站和
-工程／中心兑矿区结构及其碰撞。新增遮挡可能改变同一个 seed 的出生位置或有效性。
-revision 5 对非零原地旋转靶增加整圈可见性采样，避免只在初始相位短暂露出装甲的遮挡出生。
+`daedalus_training` 与 `training_preview` 共用 `PhysicalEnvironment::reset`。本文区分联盟赛多车型分支与旧训练分支；旧地图、无限资源覆盖及旋转靶整圈检查不能直接套到联盟赛分支。
 
-## 场地和初始状态
+## 联盟赛多车型场景
+
+使用 `configs/rmul_2027_multirobot_infantry.toml` 或 `rmul_2027_multirobot_sentry.toml`；地图和资源见 [RMUL 2027](RMUL_2027.md)，车型和启动见 [多车型环境](MULTIROBOT_FIRE_CONTROL.md)。Reset 的 `scenario.duel` 分别选择双方：
+
+```json
+{
+  "duel": {
+    "controlled": {"profile": "wheel_leg", "preset": "sentry", "motion": {"kind": "climb"}},
+    "target": {"profile": "standard", "preset": "infantry_health_cooling", "motion": {"kind": "static"}}
+  }
+}
+```
+
+| 每方字段 | 含义 |
+|---|---|
+| `profile` | `standard`、`wheel_leg`、`low`、`folding`；敌方还可选 `heavy_target` |
+| `preset` | 五种步兵／哨兵规则预设，缺省沿用配置；重装靶必须省略 |
+| `position_xz_m` | 可选世界 `[x,z]`，米；高度由合法支撑计算 |
+| `yaw_rad` | 可选底盘绕世界 +Y 朝向，弧度 |
+| `surface` | `ground`、`highland`、`bridge`，对应 0／0.2／0.27m 支撑面 |
+| `motion` | 运动类型及参数，如 `kind`、`amplitude_m`、`speed_m_s`、`angular_speed_rad_s` |
+
+省略整个 `duel` 时从配置生成双方选择。显式 `duel` 中 `profile` 默认 `standard`、`surface` 默认 `ground`、运动默认静止；不表示每个遗漏字段都继承配置。重装仅敌方可选，450HP，无发射机构。
+
+运动可选 `static`、`rotation`、`translation`、`combined`；轮腿另支持 `lift`、`climb`、`jump`，低矮／折叠支持 `tunnel`。机构模板有指定合法起点和通道，不能任意摆到障碍内；`climb`／`jump` 完成一次上台后保持位置。`jump` 可显式指定，训练客户端没有因此增加自动随机采样或课程。
+
+使用实际血量、200／750 发有限弹量及正常热量，拒绝高血量覆盖和无限热量。双方路径按真实包络、支撑和机构扫掠空间检查；显式无效参数直接报错，随机场景有上限地确定性重采样。桥面和桥下通道区分处理，机构动作与图形入口相同。
+
+初始需要有效几何观测，运动后允许合法遮挡，例如穿隧道暂时丢失目标。角色和机构真值、未来路径只进入 `evaluation`，不作为策略输入。相同版本、配置、资源、seed 和 scenario 可复现；不同采样版本的 seed 不保证对应相同场景。
+
+目标击毁或己方死亡结束回合；己方弹药耗尽后禁止新射击，继续结算在途弹至清空。默认 30s 上限由训练客户端截断。这里只接入环境，不启动正式训练，不改变网络、观测／动作维度和奖励。
+
+## 旧训练分支的适用范围
+
+以下字段和出生规则适用于旧地图配置，保持兼容；在旧地图上传入 `duel` 会被拒绝。非零匀速旋转靶 `sampling_revision=5`，其余旧场景为 4。revision 5 的整圈几何可见性不是对后续跟踪成功的保证。
+
+## 旧场景：场地与出生
 
 训练加载 `GROUND.glb`、`POWER.glb`、`OUTPOST.glb`、`TECH_CORE.glb`、两辆车及原有标定板。
 前哨站和工程／中心兑矿区以静态结构加载，参与出生避障、路径检查和视线遮挡。前哨站
@@ -25,7 +56,7 @@ revision 5 对非零原地旋转靶增加整圈可见性采样，避免只在初
 圆柱包络与障碍物穿透大于 1 mm 时拒绝，双方也不能相交。平移目标整条路径每隔不超过
 2 cm 检查支撑和障碍物，且全路径水平距离保持在 2–8 m。
 
-## Reset 的 scenario 字段
+## 旧场景：Reset 参数
 
 | 字段 | 省略时行为 / 单位 |
 | --- | --- |
@@ -44,7 +75,7 @@ revision 5 对非零原地旋转靶增加整圈可见性采样，避免只在初
 红车确定后蓝车位置/路径最多尝试 64 次。显式指定红车位置时只检查该位置；同时指定蓝车
 距离和方位时只检查该蓝车位置。不会改写显式参数以救活无效 seed。
 
-## 初始可见性与无效 seed
+## 旧场景：可见性与失败处理
 
 完成姿态同步和云台初始化后，复用正式相机的外参公式、配置分辨率/FOV、GLB 装甲角点及
 合成检测的几何判定。至少一块蓝车装甲必须同时满足：
@@ -66,7 +97,7 @@ revision 5 对非零原地旋转靶增加整圈可见性采样，避免只在初
 几何候选、初始云台角度和 `initial_visibility`。后者包含可见装甲数量、角点投影及遮挡原因。
 这些是场景诊断真值，不是策略观测。视野保证仅针对 t=0，运动或控制后仍可能失去目标。
 
-## 原地旋转靶整圈可见性检查
+## 旧场景：旋转靶整圈检查
 
 非零 `rotation` 运动在初始可见性检查后，以初始相机姿态固定观察，对目标相对初始姿态
 每 5° 采样一次，共 72 个相位。每个相位至少有一块装甲满足同一套朝向、四角视野和

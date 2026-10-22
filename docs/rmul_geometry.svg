@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="1080" viewBox="0 0 1100 1080">
+<rect width="1100" height="1080" fill="white"/>
+<g font-family="sans-serif" fill="#18212b"><text x="35" y="38" font-size="25">RMUL 2027 / Figure 3-8 geometry correction (metres)</text>
+<text x="35" y="68" font-size="16">Red local frame: u left to right, v front to wall. Blue rotates 180 degrees.</text>
+<text x="35" y="100" font-size="17">TOP VIEW (not a driving ramp)</text>
+<rect x="100" y="145" width="320" height="650" fill="#a6b6be" stroke="#222" stroke-width="2"/>
+<rect x="396" y="289" width="24" height="288" fill="#687e8a"/>
+<rect x="164" y="337" width="192" height="192" fill="#7da6bf" stroke="#333"/>
+<text x="178" y="440" font-size="16">control 1.2 x 1.2</text>
+<rect x="100" y="795" width="320" height="128" fill="white" stroke="#222"/>
+<rect x="100" y="923" width="320" height="22" fill="#a6b6be" stroke="#222"/>
+<rect x="232" y="773" width="56" height="161" fill="#d7dde1" stroke="#333"/>
+<path d="M232 795H288" stroke="#687e8a" stroke-width="2"/>
+<text x="35" y="977" font-size="16">Top view v is downward; opening is below the metal bridge.</text>
+<text x="440" y="800" font-size="16">deck end v=4.06</text><text x="440" y="866" font-size="16">OPEN slot 0.8</text>
+<text x="440" y="930" font-size="16">wall support v=4.86..5</text>
+<text x="110" y="130" font-size="16">width 2.0</text>
+<text x="440" y="350" font-size="16">curb: width .15 / length 1.8</text>
+<text x="440" y="380" font-size="16">start v=.9 / top .4</text>
+<text x="440" y="725" font-size="16">metal width .35 / u=.825..1.175</text>
+<text x="600" y="120" font-size="18">SIDE SECTION (schematic)</text>
+<path d="M610 300H1030" stroke="#222"/>
+<path d="M610 260H820V300H610Z" fill="#a6b6be" stroke="#222"/>
+<path d="M980 246H1020V300H980Z" fill="#a6b6be" stroke="#222"/>
+<path d="M792 260L820 246H994V250H820L792 264Z" fill="#d7dde1" stroke="#222"/>
+<text x="620" y="240" font-size="16">deck .2</text>
+<text x="834" y="210" font-size="16">top .27 / underside .25</text>
+<path d="M820 320H980M820 310V330M980 310V330" stroke="#222"/>
+<text x="854" y="348" font-size="16">gap .8</text>
+<text x="600" y="420" font-size="16">Estimated (unlabelled in handbook):</text>
+<text x="600" y="450" font-size="16">transition length .14; outer overlap .07;</text>
+<text x="600" y="480" font-size="16">support depth .14 from remaining field span.</text>
+<text x="35" y="1030" font-size="16">Only the narrow metal bridge covers the slot. There is no full-width roof or front approach ramp.</text>
+</g></svg>

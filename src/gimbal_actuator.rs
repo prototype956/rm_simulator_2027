@@ -580,6 +580,7 @@ pub fn update_gimbal_actuator(
     >,
     muzzle_entity: Single<(Entity, &RobotMember), (With<InfantryLaunchOffset>, With<Controlled>)>,
     robots: Query<&RobotCombatState>,
+    rigs: Query<&crate::robots::RobotRig>,
     mut pose: ParamSet<(
         TransformHelper,
         Query<
@@ -601,7 +602,10 @@ pub fn update_gimbal_actuator(
     let alive = robots
         .get(muzzle_entity.1.root)
         .is_ok_and(|state| state.life.status == LifeStatus::Alive);
-    let enabled = alive && following.load(Ordering::Acquire);
+    let enabled = alive
+        && following.load(Ordering::Acquire)
+        && rigs.get(muzzle_entity.1.root).is_ok_and(|r| r.fire_ready())
+        || (alive && following.load(Ordering::Acquire) && rigs.get(muzzle_entity.1.root).is_err());
     let actuator_config = &config.gimbal_actuator;
     let pitch_limit = config.vehicle.gimbal_pitch_limit.max(0.01) as f64;
     inbox.set_poll_hz(actuator_config.command_poll_hz);

@@ -5,6 +5,7 @@
 mod config;
 pub mod damage;
 mod heat;
+pub mod league;
 pub mod ledger;
 pub mod reset;
 pub mod shooting;
@@ -37,6 +38,10 @@ pub struct CombatRobotBundle {
 }
 
 impl CombatRobotBundle {
+    pub fn with_ruleset(mut self, ruleset: RuleSet) -> Self {
+        self.combat.ruleset = ruleset;
+        self
+    }
     pub fn with_allowance(mut self, config: AllowanceConfig) -> Self {
         self.combat.allowance = config.initial_state();
         info!(
@@ -67,6 +72,14 @@ impl CombatRobotBundle {
             RobotRules::hero_target(),
             HERO_ROBOT_CONFIG,
         )
+    }
+
+    pub fn heavy_target(id: RobotId, team: Team) -> Self {
+        let mut bundle = Self::hero_target(id, team);
+        let mut rules = RobotRules::hero_target();
+        rules.max_hp = 450;
+        bundle.combat = RobotCombatState::new(rules);
+        bundle
     }
 
     fn new(
@@ -101,6 +114,10 @@ pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
+        app.add_plugins((
+            crate::robots::RobotPlugin,
+            crate::robot_motion::RobotMotionPlugin,
+        ));
         app.init_resource::<telemetry::CombatTelemetry>()
             .add_systems(FixedLast, telemetry::sample_combat);
         app.register_type::<RobotCombatState>()

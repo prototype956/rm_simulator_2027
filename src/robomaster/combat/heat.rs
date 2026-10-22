@@ -196,7 +196,7 @@ pub(super) fn cool_robot_heat(world: &mut World) {
         if state.shooter.kind != ShooterKind::Barrel17mm {
             continue;
         }
-        let rate = state.rules.cooling_per_second;
+        let rate = state.effective_cooling(now);
         state.heat.cool_until(now, rate, |tick, before, after| {
             log_change(identity.id, tick, "cooling", before, after);
             if before.cooling_locked != after.cooling_locked

@@ -52,8 +52,16 @@ pub fn vehicle_controls(
     time: Res<Time>,
     controller: Res<ControllerState>,
     config: Res<SimulationConfig>,
+    authority: Query<
+        (),
+        Or<(
+            With<crate::wheel_leg_traversal::Traversal>,
+            With<crate::wheel_leg_traversal::Recovery>,
+            With<crate::robot_motion::RobotProgram>,
+        )>,
+    >,
     infantry: Single<
-        (Forces, &Mass, &mut VehicleDynamic),
+        (Entity, Forces, &Mass, &mut VehicleDynamic),
         (With<Infantry>, With<Controlled>, Without<CombatDead>),
     >,
     gimbal: Single<
@@ -74,7 +82,10 @@ pub fn vehicle_controls(
     let input = controller.movement;
     let boost = controller.boost_multiplier();
 
-    let (mut forces, &Mass(mass), mut dynamic) = infantry.into_inner();
+    let (root, mut forces, &Mass(mass), mut dynamic) = infantry.into_inner();
+    if authority.contains(root) {
+        return;
+    }
 
     let dt = time.delta_secs();
     dynamic.linear(
@@ -103,8 +114,16 @@ pub fn remote_vehicle_controls(
     time: Res<Time>,
     controller: Res<ControllerState>,
     config: Res<SimulationConfig>,
+    authority: Query<
+        (),
+        Or<(
+            With<crate::wheel_leg_traversal::Traversal>,
+            With<crate::wheel_leg_traversal::Recovery>,
+            With<crate::robot_motion::RobotProgram>,
+        )>,
+    >,
     infantry: Single<
-        (&GlobalTransform, Forces, &Mass, &mut VehicleDynamic),
+        (Entity, &GlobalTransform, Forces, &Mass, &mut VehicleDynamic),
         (
             With<ActiveSlapper>,
             With<Infantry>,
@@ -126,7 +145,11 @@ pub fn remote_vehicle_controls(
     let input = controller.movement;
     let boost = controller.boost_multiplier();
 
-    let (infantry_global_transform, mut forces, &Mass(mass), mut dynamic) = infantry.into_inner();
+    let (root, infantry_global_transform, mut forces, &Mass(mass), mut dynamic) =
+        infantry.into_inner();
+    if authority.contains(root) {
+        return;
+    }
 
     let dt = time.delta_secs();
     dynamic.linear(
@@ -156,8 +179,10 @@ pub fn gimbal_controls(
     controller: Res<ControllerState>,
     enabled: Res<SubscribeAutoAim>,
     config: Res<SimulationConfig>,
+    rigs: Query<&crate::robots::RobotRig>,
+    members: Query<&crate::robomaster::combat::RobotMember>,
     gimbal: Single<
-        (&mut Transform, &mut InfantryGimbal),
+        (Entity, &mut Transform, &mut InfantryGimbal),
         (
             With<Controlled>,
             Without<InfantryChassis>,
@@ -170,7 +195,13 @@ pub fn gimbal_controls(
     }
 
     let dt = time.delta_secs();
-    let (mut gimbal_transform, mut gimbal_data) = gimbal.into_inner();
+    let (entity, mut gimbal_transform, mut gimbal_data) = gimbal.into_inner();
+    if members
+        .get(entity)
+        .is_ok_and(|m| rigs.get(m.root).is_ok_and(|r| !r.fire_ready()))
+    {
+        return;
+    }
 
     (gimbal_data.local_yaw, gimbal_data.pitch, _) =
         gimbal_transform.rotation.to_euler(EulerRot::YXZ);
@@ -195,8 +226,10 @@ pub fn remote_gimbal_controls(
     time: Res<Time>,
     controller: Res<ControllerState>,
     config: Res<SimulationConfig>,
+    rigs: Query<&crate::robots::RobotRig>,
+    members: Query<&crate::robomaster::combat::RobotMember>,
     gimbal: Single<
-        (&mut Transform, &mut InfantryGimbal),
+        (Entity, &mut Transform, &mut InfantryGimbal),
         (
             With<ActiveSlapper>,
             Without<InfantryChassis>,
@@ -205,7 +238,13 @@ pub fn remote_gimbal_controls(
     >,
 ) {
     let dt = time.delta_secs();
-    let (mut gimbal_transform, mut gimbal_data) = gimbal.into_inner();
+    let (entity, mut gimbal_transform, mut gimbal_data) = gimbal.into_inner();
+    if members
+        .get(entity)
+        .is_ok_and(|m| rigs.get(m.root).is_ok_and(|r| !r.fire_ready()))
+    {
+        return;
+    }
 
     (gimbal_data.local_yaw, gimbal_data.pitch, _) =
         gimbal_transform.rotation.to_euler(EulerRot::YXZ);

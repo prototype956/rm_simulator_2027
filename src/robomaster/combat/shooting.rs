@@ -56,6 +56,7 @@ pub enum FireRejection {
     MechanicalInterval,
     FeedBusy,
     ExternalControlDisabled,
+    MechanismLocked,
     MissingMuzzle,
     InvalidMuzzlePose,
 }
@@ -128,7 +129,11 @@ impl Plugin for ShootingPlugin {
             .add_message::<ShotFired>()
             .add_systems(
                 FixedPostUpdate,
-                (collect_manual_requests, execute_fire_requests)
+                (
+                    collect_manual_requests,
+                    execute_fire_requests,
+                    super::damage::cache_impact_samples,
+                )
                     .chain()
                     .before(PhysicsSystems::First),
             )
@@ -278,6 +283,12 @@ fn rejection(
     if state.life.status == LifeStatus::Dead {
         return Some(FireRejection::Dead);
     }
+    if world
+        .get::<crate::robots::RobotRig>(root)
+        .is_some_and(|rig| !rig.fire_ready())
+    {
+        return Some(FireRejection::MechanismLocked);
+    }
     if state.shooter.kind == ShooterKind::None {
         return Some(FireRejection::NoShooter);
     }
@@ -312,6 +323,7 @@ fn rejection(
 /// requests. No deferred spawn or observer can report a shot that has not yet become an entity.
 pub(super) fn execute_fire_requests(world: &mut World) {
     // Deterministic convention: due cooling -> admission/feed completion -> shot heat/locks.
+    super::league::update_regions(world);
     cool_robot_heat(world);
     let now = world.resource::<Time<Fixed>>().elapsed();
     let robots: Vec<_> = world

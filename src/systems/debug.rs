@@ -63,6 +63,7 @@ pub fn update_help_text(
     controller: Res<ControllerState>,
     round: Option<Res<crate::robomaster::combat::reset::TrainingRound>>,
     clock: Option<Res<Time<Fixed>>>,
+    profiles: Query<&crate::robots::RobotProfile>,
 ) {
     for mut text in text.iter_mut() {
         *text = create_help_text(
@@ -70,6 +71,10 @@ pub fn update_help_text(
             &stats,
             &controller,
         );
+        if !profiles.is_empty() {
+            text.0
+                .push_str("\nZ Fold/Unfold | X Leg lift + Drive to climb | F6 Jump | Alt: target");
+        }
         if let (Some(round), Some(clock)) = (&round, &clock) {
             text.0.push_str(&format!(
                 "\nround={} sim={:.1}s | R Reset",

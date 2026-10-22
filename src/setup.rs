@@ -72,122 +72,98 @@ pub fn setup(
         .with_default_layers(layer_env)
     };
 
-    commands.spawn((
-        WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("GROUND.glb"))),
-        Transform::IDENTITY,
-        GroundRoot,
-        Friction::new(0.5),
-        PreciousCollision(HashMap::from([(
-            "GROUND_DENSE".to_string(),
+    let league_map = config.scene.is_league();
+    if league_map {
+        crate::field::spawn(&mut commands);
+    } else {
+        commands.spawn((
+            WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("GROUND.glb"))),
+            Transform::IDENTITY,
+            GroundRoot,
+            Friction::new(0.5),
+            PreciousCollision(HashMap::from([(
+                "GROUND_DENSE".to_string(),
+                (
+                    trimesh(),
+                    layer_env,
+                    Visibility::Visible,
+                    Some(RigidBody::Static),
+                ),
+            )])),
+        ));
+
+        commands.spawn((
+            WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("CALIB.glb"))),
+            Transform::IDENTITY
+                .with_scale(Vec3::splat(1.0))
+                .with_translation(Vec3::new(1.0, 2.5, 1.0)),
+        ));
+
+        commands.spawn((
+            WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("CALIB.glb"))),
+            Transform::IDENTITY
+                .with_scale(Vec3::splat(1.0))
+                .with_translation(Vec3::new(2.0, 0.5, 2.0)),
+        ));
+
+        // Field structures are shared by normal rendering, training physics and its preview.
+        commands.spawn((
+            RigidBody::Static,
+            WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("OUTPOST.glb"))),
+            Transform::IDENTITY,
+            ScanOutpost,
+        ));
+
+        commands.spawn((
+            WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("TECH_CORE.glb"))),
+            Transform::IDENTITY,
+            TechCoreRoot,
+            PreciousCollision(HashMap::from([(
+                "GROUND".to_string(),
+                (
+                    trimesh(),
+                    layer_env,
+                    Visibility::Visible,
+                    Some(RigidBody::Static),
+                ),
+            )])),
+        ));
+
+        let mut power_rune_col = HashMap::from([(
+            "BASE".to_string(),
             (
                 trimesh(),
                 layer_env,
                 Visibility::Visible,
                 Some(RigidBody::Static),
             ),
-        )])),
-    ));
-
-    commands.spawn((
-        WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("CALIB.glb"))),
-        Transform::IDENTITY
-            .with_scale(Vec3::splat(1.0))
-            .with_translation(Vec3::new(1.0, 2.5, 1.0)),
-    ));
-
-    commands.spawn((
-        WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("CALIB.glb"))),
-        Transform::IDENTITY
-            .with_scale(Vec3::splat(1.0))
-            .with_translation(Vec3::new(2.0, 0.5, 2.0)),
-    ));
-
-    // Field structures are shared by normal rendering, training physics and its preview.
-    commands.spawn((
-        RigidBody::Static,
-        WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("OUTPOST.glb"))),
-        Transform::IDENTITY,
-        ScanOutpost,
-    ));
-
-    commands.spawn((
-        WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("TECH_CORE.glb"))),
-        Transform::IDENTITY,
-        TechCoreRoot,
-        PreciousCollision(HashMap::from([(
-            "GROUND".to_string(),
-            (
-                trimesh(),
-                layer_env,
-                Visibility::Visible,
-                Some(RigidBody::Static),
-            ),
-        )])),
-    ));
-
-    let mut power_rune_col = HashMap::from([(
-        "BASE".to_string(),
-        (
-            trimesh(),
-            layer_env,
-            Visibility::Visible,
-            Some(RigidBody::Static),
-        ),
-    )]);
-    for i in 1..=2 {
-        for j in 1..=5 {
-            for k in ["ACTIVATED", "ACTIVE", "COMPLETED", "DISABLED"] {
-                // Training uses the deactivated geometry only; hidden variants cannot block rays.
-                if training.is_some() && k != "DISABLED" {
-                    continue;
+        )]);
+        for i in 1..=2 {
+            for j in 1..=5 {
+                for k in ["ACTIVATED", "ACTIVE", "COMPLETED", "DISABLED"] {
+                    // Training uses the deactivated geometry only; hidden variants cannot block rays.
+                    if training.is_some() && k != "DISABLED" {
+                        continue;
+                    }
+                    power_rune_col.insert(
+                        format!("FACE_{}_TARGET_{}_{}", i, j, k).to_string(),
+                        (voxel(0.015), layer_env, Visibility::Visible, None),
+                    );
                 }
-                power_rune_col.insert(
-                    format!("FACE_{}_TARGET_{}_{}", i, j, k).to_string(),
-                    (voxel(0.015), layer_env, Visibility::Visible, None),
-                );
             }
         }
-    }
-    commands.spawn((
-        RigidBody::Static,
-        CollisionMargin(0.001),
-        Restitution::ZERO,
-        WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("POWER.glb"))),
-        Transform::IDENTITY,
-        PowerRuneRoot,
-        PreciousCollision(power_rune_col),
-    ));
-
-    commands.spawn((
-        Name::new("robot_1"),
-        WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("vehicle.glb"))),
-        Transform::from_xyz(0.0, 1.0, 0.0),
-        CombatRobotBundle::training(CONTROLLED_ROBOT_ID, Team::Red, config.combat.controlled)
-            .with_allowance(config.combat.controlled_allowance)
-            .with_shooter_config(&config.projectile),
-        Controlled,
-    ));
-
-    commands.spawn((
-        Name::new("robot_2"),
-        WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("vehicle.glb"))),
-        Transform::from_xyz(1.0, 1.0, 1.0),
-        CombatRobotBundle::training(TARGET_ROBOT_ID, Team::Blue, config.combat.target)
-            .with_allowance(config.combat.target_allowance)
-            .with_shooter_config(&config.projectile),
-        SlapperInfantry,
-    ));
-
-    if training.is_none() {
         commands.spawn((
-            Name::new("robot_3"),
-            WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("HERO.glb"))),
-            Transform::from_xyz(2.0, 1.0, 1.0),
-            CombatRobotBundle::hero_target(HERO_TARGET_ID, Team::Blue),
-            SlapperInfantry,
-            ActiveSlapper,
+            RigidBody::Static,
+            CollisionMargin(0.001),
+            Restitution::ZERO,
+            WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("POWER.glb"))),
+            Transform::IDENTITY,
+            PowerRuneRoot,
+            PreciousCollision(power_rune_col),
         ));
     }
+
+    spawn_combat_robots(&mut commands, &asset_server, &config, training.is_some());
 
     if training.is_none() {
         let mut main_camera = commands.spawn((
@@ -232,15 +208,82 @@ pub fn setup(
     }
 }
 
+pub fn spawn_combat_robots(
+    commands: &mut Commands,
+    asset_server: &AssetServer,
+    config: &SimulationConfig,
+    headless: bool,
+) {
+    let league_map = config.scene.is_league();
+    let profiles = config.robots.clone().unwrap_or_default();
+    assert!(
+        profiles.controlled != crate::robots::RobotProfile::HeavyTarget,
+        "heavy target cannot be controlled"
+    );
+    commands.spawn((
+        Name::new("robot_1"),
+        WorldAssetRoot(
+            asset_server.load(GltfAssetLabel::Scene(0).from_asset(profiles.controlled.asset())),
+        ),
+        if league_map {
+            Transform::from_xyz(0.0, profiles.controlled.root_height(), 2.0)
+        } else {
+            Transform::from_xyz(0.0, 1.0, 0.0)
+        },
+        CombatRobotBundle::training(CONTROLLED_ROBOT_ID, Team::Red, config.combat.controlled)
+            .with_ruleset(config.combat.ruleset)
+            .with_allowance(config.combat.controlled_allowance)
+            .with_shooter_config(&config.projectile),
+        Controlled,
+    ));
+
+    let target_root = commands
+        .spawn((
+            Name::new("robot_2"),
+            WorldAssetRoot(
+                asset_server.load(GltfAssetLabel::Scene(0).from_asset(profiles.target.asset())),
+            ),
+            if league_map {
+                Transform::from_xyz(0.0, profiles.target.root_height(), -2.0)
+            } else {
+                Transform::from_xyz(1.0, 1.0, 1.0)
+            },
+            (if profiles.target == crate::robots::RobotProfile::HeavyTarget {
+                CombatRobotBundle::heavy_target(TARGET_ROBOT_ID, Team::Blue)
+            } else {
+                CombatRobotBundle::training(TARGET_ROBOT_ID, Team::Blue, config.combat.target)
+            })
+            .with_ruleset(config.combat.ruleset)
+            .with_allowance(config.combat.target_allowance)
+            .with_shooter_config(&config.projectile),
+            SlapperInfantry,
+        ))
+        .id();
+    if league_map {
+        commands.entity(target_root).insert(ActiveSlapper);
+    }
+
+    if !headless && !league_map {
+        commands.spawn((
+            Name::new("robot_3"),
+            WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("HERO.glb"))),
+            Transform::from_xyz(2.0, 1.0, 1.0),
+            CombatRobotBundle::hero_target(HERO_TARGET_ID, Team::Blue),
+            SlapperInfantry,
+            ActiveSlapper,
+        ));
+    }
+}
+
 pub fn setup_ground(
     events: On<WorldInstanceReady>,
     mut commands: Commands,
     children: Query<&Children>,
     name: Query<&Name>,
-    ground: Single<Entity, With<ScanOutpost>>,
+    ground: Query<(), With<ScanOutpost>>,
 ) {
     let root = events.entity;
-    if ground.into_inner() != root {
+    if !ground.contains(root) {
         return;
     }
     children.iter_descendants(root).for_each(|e| {
@@ -294,6 +337,7 @@ pub fn setup_vehicle(
     _secondary_query: Query<&ChildOf, (Without<Infantry>, Without<WorldInstance>)>,
     _node_query: Query<(&Name, &ChildOf), (Without<Infantry>, Without<WorldInstance>)>,
     sim_config: Res<SimulationConfig>,
+    transforms: Query<&Transform>,
 ) {
     let root = events.entity;
     if root_query.get(root).is_err() {
@@ -372,10 +416,42 @@ pub fn setup_vehicle(
     ));
     let gimbal = iter.exact("GIMBAL").one().unwrap();
     commands.entity(gimbal).insert(InfantryGimbal::default());
+    // The legacy GLB also carries two red/blue calibration fixtures on GIMBAL.
+    // They are not combat armor and must not appear as false targets in the league scene.
+    if sim_config.scene.is_league() {
+        if let Ok(children) = query.children.get(gimbal) {
+            for child in children.iter() {
+                if query
+                    .name
+                    .get(child)
+                    .is_ok_and(|name| name.as_str() != "GIMBAL_MAIN")
+                {
+                    commands.entity(child).insert(Visibility::Hidden);
+                }
+            }
+        }
+    }
     // Every available barrel belongs to its robot; only the controlled camera is special.
     let q = query.of(gimbal).flatten();
     if let Some(muzzle) = q.clone().exact("SHOT_DIRECTION").one() {
         commands.entity(muzzle).insert(InfantryLaunchOffset);
+        if sim_config.scene.is_league() && is_local {
+            // Neutralize the GLB barrel's baked-in elevation for the initial engagement.
+            if let (Ok(barrel), Ok(gimbal_transform)) =
+                (transforms.get(muzzle), transforms.get(gimbal))
+            {
+                let mut pose = *gimbal_transform;
+                pose.rotation = Quat::from_rotation_arc(barrel.rotation * Vec3::Y, Vec3::NEG_Z);
+                let (yaw, pitch, _) = pose.rotation.to_euler(EulerRot::YXZ);
+                commands.entity(gimbal).insert((
+                    pose,
+                    InfantryGimbal {
+                        local_yaw: yaw,
+                        pitch,
+                    },
+                ));
+            }
+        }
     }
     if is_local {
         commands
@@ -383,6 +459,15 @@ pub fn setup_vehicle(
             .insert(InfantryViewOffset);
     }
     commands.queue(move |world: &mut World| {
+        let config = world.resource::<SimulationConfig>().clone();
+        if let Some(profiles) = config.robots {
+            let profile = if is_local {
+                profiles.controlled
+            } else {
+                profiles.target
+            };
+            crate::robots::build_rig(world, root, profile);
+        }
         crate::robomaster::combat::reset::capture_initial_robot(world, root)
     });
 }

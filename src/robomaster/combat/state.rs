@@ -139,6 +139,8 @@ pub enum FireAllowance {
 #[derive(Component, Reflect, Clone, Debug)]
 #[reflect(Component)]
 pub struct RobotCombatState {
+    pub ruleset: super::RuleSet,
+    pub league: super::league::LeagueState,
     pub damage: DamageStatistics,
     pub rules: RobotRules,
     pub shooter: ShooterState,
@@ -148,8 +150,17 @@ pub struct RobotCombatState {
 }
 
 impl RobotCombatState {
+    pub fn effective_cooling(&self, now: Duration) -> u32 {
+        if self.ruleset == super::RuleSet::Rmul2027 && self.league.cooling_active(now) {
+            self.rules.cooling_per_second * 3 / 2
+        } else {
+            self.rules.cooling_per_second
+        }
+    }
     pub fn new(rules: RobotRules) -> Self {
         Self {
+            ruleset: super::RuleSet::Legacy,
+            league: super::league::LeagueState::default(),
             damage: DamageStatistics::default(),
             rules,
             shooter: ShooterState {

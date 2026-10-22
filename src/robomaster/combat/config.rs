@@ -1,12 +1,13 @@
 use super::{CombatRole, RobotRules, ShooterKind};
 use bevy::prelude::Reflect;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Rule selections are copied to robot roots at spawn, not read every frame.
 /// Hot reload stages new selections for the next scene initialization.
 #[derive(Deserialize, Reflect, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct CombatConfig {
+    pub ruleset: RuleSet,
     pub controlled: TrainingPreset,
     pub target: TrainingPreset,
     /// Print the bounded current-round event buffer when resetting.
@@ -15,9 +16,18 @@ pub struct CombatConfig {
     pub target_allowance: AllowanceConfig,
 }
 
+/// Explicit opt-in keeps existing training and legacy maps unchanged.
+#[derive(Deserialize, Reflect, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleSet {
+    #[default]
+    Legacy,
+    Rmul2027,
+}
+
 /// RMUL 2026 V1.2.0, tables 3-3 and 3-4 (printed pages 18–20).
 /// Chassis power selection affects the HP preset only; no power model is added here.
-#[derive(Deserialize, Reflect, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Deserialize, Serialize, Reflect, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TrainingPreset {
     #[default]

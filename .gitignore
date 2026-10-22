@@ -12,3 +12,6 @@ screenshot-*.png
 /build/
 build.sh
 env.sh
+# Python-generated cache
+__pycache__/
+*.py[cod]

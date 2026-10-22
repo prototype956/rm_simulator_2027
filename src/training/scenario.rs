@@ -78,6 +78,7 @@ impl Motion {
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Scenario {
+    pub duel: Option<super::duel::DuelScenario>,
     /// Training-only standard-target HP override; omitted preserves the combat preset.
     pub target_hp: Option<u32>,
     /// Training-only mode for both robots; omitted preserves normal heat rules.
@@ -122,6 +123,14 @@ impl Scenario {
             return Err("target_hp must be in [1, 1000000]".into());
         }
         scenario.motion.validate()?;
+        if scenario.duel.is_some()
+            && value.as_object().is_some_and(|v| {
+                v.keys()
+                    .any(|k| !matches!(k.as_str(), "duel" | "measurements" | "unlimited_heat"))
+            })
+        {
+            return Err("duel cannot be mixed with legacy pose/motion/target_hp fields".into());
+        }
         if let Some(config) = &scenario.measurements {
             config.validate()?;
         }
@@ -517,16 +526,20 @@ pub fn drive_target(
         &mut AngularVelocity,
         &RigidBody,
         Has<CombatDead>,
+        Has<crate::robot_motion::RobotProgram>,
     )>,
 ) {
     let Some(script) = script else {
         return;
     };
-    let Ok((position, rotation, com, mut velocity, mut angular, body, dead)) =
+    let Ok((position, rotation, com, mut velocity, mut angular, body, dead, prescribed)) =
         roots.get_mut(script.entity)
     else {
         return;
     };
+    if prescribed {
+        return;
+    }
     if dead {
         // Remove scripted power without teleporting or zeroing momentum. Imported mass,
         // gravity, friction and contacts govern the dead body from this tick onward.
@@ -586,16 +599,21 @@ pub fn restore_scripted_integration(
 pub fn verify_target(
     time: Res<Time<Fixed>>,
     script: Option<ResMut<ScriptedTarget>>,
-    roots: Query<(&Position, &Rotation, Has<CombatDead>)>,
+    roots: Query<(
+        &Position,
+        &Rotation,
+        Has<CombatDead>,
+        Has<crate::robot_motion::RobotProgram>,
+    )>,
 ) {
     let Some(mut script) = script else {
         return;
     };
-    let Ok((position, rotation, dead)) = roots.get(script.entity) else {
+    let Ok((position, rotation, dead, prescribed)) = roots.get(script.entity) else {
         script.failed = Some("scripted target disappeared".into());
         return;
     };
-    if dead {
+    if dead || prescribed {
         return;
     }
     let desired = script.motion.pose(script.initial, time.elapsed_secs_f64());

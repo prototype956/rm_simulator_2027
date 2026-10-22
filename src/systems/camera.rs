@@ -3,8 +3,8 @@ use bevy::prelude::*;
 use std::f32::consts::PI;
 
 use crate::components::{
-    CameraMode, Controlled, FollowingType, Infantry, InfantryGimbal, InfantryLaunchOffset,
-    InfantryViewOffset, MainCamera,
+    CameraMode, Controlled, FollowingType, Infantry, InfantryLaunchOffset, InfantryViewOffset,
+    MainCamera,
 };
 use crate::config::SimulationConfig;
 use crate::systems::ControllerState;
@@ -32,29 +32,49 @@ pub fn robot_camera_pose(
         .with_rotation(rotation * muzzle.rotation * Quat::from_rotation_x(PI / 2.0))
 }
 
+/// Resolve the actual mount hierarchy, including body lift, fold mount and local scale.
+pub fn robot_camera_from_mounts(view: GlobalTransform, muzzle: GlobalTransform) -> Transform {
+    Transform::from_translation(view.translation())
+        .with_rotation(muzzle.rotation() * Quat::from_rotation_x(PI / 2.0))
+}
+
 pub fn update_camera_follow(
-    camera_query: Single<(&mut Transform, &MainCamera), Without<Controlled>>,
+    camera_query: Single<(Entity, &MainCamera), Without<Controlled>>,
     infantry: Single<&Transform, (With<Infantry>, With<Controlled>)>,
-    gimbal: Single<&Transform, (With<Controlled>, With<InfantryGimbal>)>,
-    view_offset: Single<&Transform, (With<Controlled>, With<InfantryViewOffset>)>,
-    launch_offset: Single<&Transform, (With<Controlled>, With<InfantryLaunchOffset>)>,
+    view_offset: Single<Entity, (With<Controlled>, With<InfantryViewOffset>)>,
+    launch_offset: Single<Entity, (With<Controlled>, With<InfantryLaunchOffset>)>,
+    mut transforms: ParamSet<(
+        TransformHelper,
+        Query<&mut Transform, (With<MainCamera>, Without<Infantry>)>,
+    )>,
     mode: Res<CameraMode>,
 ) {
-    let gimbal_transform = gimbal.into_inner();
-    let (mut camera_transform, camera_offset) = camera_query.into_inner();
-
+    let (camera_entity, camera_offset) = camera_query.into_inner();
+    let mut desired = None;
     match mode.0 {
         FollowingType::Robot => {
-            *camera_transform =
-                robot_camera_pose(&infantry, gimbal_transform, &view_offset, &launch_offset);
+            let helper = transforms.p0();
+            if let (Ok(view), Ok(muzzle)) = (
+                helper.compute_global_transform(*view_offset),
+                helper.compute_global_transform(*launch_offset),
+            ) {
+                desired = Some(robot_camera_from_mounts(view, muzzle));
+            }
         }
         FollowingType::ThirdPerson => {
             let base_transform = infantry.into_inner();
             let offset = base_transform.rotation * camera_offset.follow_offset;
-            camera_transform.translation = base_transform.translation + offset;
-            camera_transform.look_at(base_transform.translation, Vec3::Y);
+            desired = Some(
+                Transform::from_translation(base_transform.translation + offset)
+                    .looking_at(base_transform.translation, Vec3::Y),
+            );
         }
         FollowingType::Free => {}
+    }
+    if let Some(pose) = desired {
+        if let Ok(mut transform) = transforms.p1().get_mut(camera_entity) {
+            *transform = pose;
+        }
     }
 }
 

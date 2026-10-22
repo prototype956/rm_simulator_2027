@@ -66,7 +66,8 @@ fn update_clock(time: Res<Time<Fixed>>, mut clock: ResMut<ActuatorClock>) {
     clock.elapsed = time.elapsed();
 }
 
-fn build_app(config: SimulationConfig, asset_path: PathBuf) -> Result<App, String> {
+pub fn build_app(config: SimulationConfig, asset_path: PathBuf) -> Result<App, String> {
+    let league_map = config.scene.is_league();
     let mut app = App::new();
     app.add_plugins(
         DefaultPlugins
@@ -119,7 +120,12 @@ fn build_app(config: SimulationConfig, asset_path: PathBuf) -> Result<App, Strin
         .add_observer(setup_training_outpost)
         .add_systems(
             FixedPreUpdate,
-            (update_clock, scenario::drive_target, update_gimbal_actuator).chain(),
+            (
+                update_clock,
+                scenario::drive_target.before(crate::robot_motion::drive_programs),
+                update_gimbal_actuator,
+            )
+                .chain(),
         )
         .add_systems(FixedUpdate, projectile_aerodynamics)
         .add_systems(FixedLast, scenario::verify_target)
@@ -130,6 +136,7 @@ fn build_app(config: SimulationConfig, asset_path: PathBuf) -> Result<App, Strin
                     .after(SolverSystems::PostSubstep)
                     .before(SweptCcdSystems),
                 scenario::restore_scripted_integration
+                    .before(crate::robot_motion::restore_integration)
                     .after(SweptCcdSystems)
                     .before(SolverSystems::Restitution),
             ),
@@ -177,15 +184,13 @@ fn build_app(config: SimulationConfig, asset_path: PathBuf) -> Result<App, Strin
             .iter(w)
             .next()
             .is_some();
-        if power_ready
-            && outpost_ready
-            && tech_core_ready
+        if (league_map || (power_ready && outpost_ready && tech_core_ready))
             && robots == 2
-            && armors == 14
+            && armors == if league_map { 8 } else { 14 }
             && muzzles == 2
             && colliders > 10
             && constructors == 0
-            && ground_ready
+            && (league_map || ground_ready)
         {
             break;
         }
@@ -206,13 +211,33 @@ impl Environment for PhysicalEnvironment {
         let target_hp = scenario.target_hp;
         let unlimited_heat = scenario.unlimited_heat;
         let mut config = self.config.clone();
+        let duel = if config.scene.is_league() {
+            if target_hp.is_some() || unlimited_heat {
+                return Err("RMUL duel requires real HP, finite ammo and normal heat".into());
+            }
+            let duel = scenario
+                .duel
+                .clone()
+                .unwrap_or_else(|| super::duel::DuelScenario::from_config(&config));
+            duel.configure(&mut config)?;
+            Some(duel)
+        } else {
+            if scenario.duel.is_some() {
+                return Err("duel requires RMUL map configuration".into());
+            }
+            None
+        };
         config.gimbal_actuator.integration_hz = 1000.0;
         // Rebuild transactionally: fresh physics/contact, request, RNG and asset-instance state.
         // Asset-cache reuse is a later throughput optimization, not a partial in-place reset.
         let mut app = build_app(config, self.asset_path.clone())?;
         // Geometry is fully loaded but physics has not advanced. Place both roots on checked
         // support before enabling the clock; the old origin may intersect the central obstacle.
-        let prepared = scenario::prepare(app.world_mut(), scenario, seed)?;
+        let prepared = if let Some(duel) = duel {
+            super::duel::prepare(app.world_mut(), duel, seed)?
+        } else {
+            scenario::prepare(app.world_mut(), scenario, seed)?
+        };
         let (initial_yaw, initial_pitch) = prepared.initial_gimbal;
         app.world_mut()
             .entity_mut(prepared.controlled_entity)
@@ -254,6 +279,7 @@ impl Environment for PhysicalEnvironment {
         app.insert_resource(script);
         {
             let w = app.world_mut();
+            super::duel::activate(w);
             // Establish round-local time after pose synchronization; no host epoch is exposed.
             w.insert_resource(Time::<Fixed>::from_duration(Duration::from_nanos(
                 self.physics_dt_ns,
@@ -280,6 +306,7 @@ impl Environment for PhysicalEnvironment {
                 if unlimited_heat {
                     state.heat = HeatState::unlimited(Duration::ZERO);
                 }
+                state.ruleset = old.ruleset;
                 state.shooter.mechanics = old.shooter.mechanics;
                 state.allowance = old.allowance.clone();
                 *old = state;
@@ -394,6 +421,16 @@ impl PhysicalEnvironment {
         for _ in 0..CONTROL_DT_NS / self.physics_dt_ns {
             app.update();
             measurements::tick(app)?;
+            {
+                let w = app.world_mut();
+                if let Some(error) = w
+                    .query::<&crate::robot_motion::RobotProgram>()
+                    .iter(w)
+                    .find_map(|p| p.failed.clone())
+                {
+                    return Err(error);
+                }
+            }
             if let Some(error) = &app.world().resource::<ScriptedTarget>().failed {
                 return Err(error.clone());
             }
@@ -455,6 +492,21 @@ fn inspect_app(app: &mut App) -> Result<Value, String> {
             .map(|(id,t,s,v,a)| json!({"robot_id":id.id.0,"position_bevy_m":t.translation.to_array(),
                 "rotation_xyzw":t.rotation.to_array(),"velocity_bevy_m_s":v.0.to_array(),"angular_velocity_bevy_rad_s":a.0.to_array(),"hp":s.life.hp,"actual_shots":s.shooter.actual_shots,
                 "rejected_requests":s.shooter.rejected_requests,"damage_dealt":s.damage.damage_dealt,"resources":closure::resources(s)})).collect();
+    for robot in &mut robots {
+        let id = robot["robot_id"].as_u64().unwrap();
+        if let Some((_, profile, rig)) = w
+            .query::<(
+                &RobotIdentity,
+                &crate::robots::RobotProfile,
+                &crate::robots::RobotRig,
+            )>()
+            .iter(w)
+            .find(|(i, _, _)| i.id.0 == id)
+        {
+            robot["profile"] = json!(profile);
+            robot["mechanism"] = json!({"fold":rig.fold,"lift_m":rig.lift_m,"fire_ready":rig.fire_ready(),"blocked":rig.blocked});
+        }
+    }
     robots.sort_by_key(|r| r["robot_id"].as_u64());
     let mut projectiles: Vec<_> = w.query::<(&shooting::ProjectileShot, &Position)>().iter(w)
             .map(|(s,p)| json!({"projectile_id":s.id,"request_id":s.request.id,"position_bevy_m":p.0.to_array()})).collect();

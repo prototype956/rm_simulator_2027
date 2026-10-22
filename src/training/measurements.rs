@@ -126,7 +126,7 @@ fn capture(
         Without<crate::robomaster::prelude::Projectile>,
     >,
 ) -> Result<(Value, Vec<Value>), String> {
-    let (root, _, _, _) = robots
+    let (_root, _, _, _) = robots
         .iter()
         .find(|(_, _, _, id)| id.is_some_and(|id| id.id == CONTROLLED_ROBOT_ID))
         .ok_or("controlled root missing")?;
@@ -147,11 +147,11 @@ fn capture(
     let gim = gim.ok_or("gimbal missing")?;
     let view = view.ok_or("camera view offset missing")?;
     let muzzle = muzzle.ok_or("muzzle missing")?;
-    let root_t = local.get(root).map_err(|e| e.to_string())?;
-    let gim_t = local.get(gim).map_err(|e| e.to_string())?;
-    let view_t = local.get(view).map_err(|e| e.to_string())?;
     let muzzle_t = local.get(muzzle).map_err(|e| e.to_string())?;
-    let camera = crate::systems::robot_camera_pose(root_t, gim_t, view_t, muzzle_t);
+    let camera = crate::systems::robot_camera_from_mounts(
+        *globals.get(view).map_err(|e| e.to_string())?,
+        *globals.get(muzzle).map_err(|e| e.to_string())?,
+    );
     let camera_rot = camera.rotation;
     let camera_pos = camera.translation;
     let gim_global = globals.get(gim).map_err(|e| e.to_string())?;

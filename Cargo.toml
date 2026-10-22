@@ -69,3 +69,11 @@ required-features = ["training"]
 name = "training_preview"
 path = "examples/training_preview.rs"
 required-features = ["training"]
+
+[[test]]
+name = "robot_contracts"
+required-features = ["training", "talos"]
+
+[[test]]
+name = "environment_contracts"
+required-features = ["training", "talos"]

@@ -142,6 +142,7 @@ pub(super) struct HealthScene<'w, 's> {
         ),
     >,
     mode: Res<'w, CameraMode>,
+    profiles: Query<'w, 's, &'static crate::robots::RobotProfile>,
     scale: Res<'w, UiScale>,
 }
 
@@ -321,8 +322,21 @@ pub(super) fn update_health_hud(
             format!("{} #{}  DEAD", name, id.id.0)
         } else {
             format!(
-                "{} #{}  {}/{}",
-                name, id.id.0, state.life.hp, state.rules.max_hp
+                "{} #{} {} {}/{}",
+                name,
+                id.id.0,
+                if scene.robots.iter().any(|(e, i, _, _)| i.id == id.id
+                    && scene
+                        .profiles
+                        .get(e)
+                        .is_ok_and(|p| *p == crate::robots::RobotProfile::HeavyTarget))
+                {
+                    "HEAVY PROXY"
+                } else {
+                    ""
+                },
+                state.life.hp,
+                state.rules.max_hp
             )
         };
         if text.0 != value {

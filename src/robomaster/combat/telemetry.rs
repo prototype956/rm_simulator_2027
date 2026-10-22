@@ -47,7 +47,7 @@ fn robot_meta(
         max_hp: state.rules.max_hp,
         heat: state.heat.current() as f32,
         heat_limit: state.rules.heat_limit as f32,
-        cooling_per_second: state.rules.cooling_per_second as f32,
+        cooling_per_second: state.effective_cooling(now) as f32,
         allowance_remaining: match state.allowance {
             FireAllowance::Unlimited => 0,
             FireAllowance::Limited(n) => n,
@@ -94,7 +94,10 @@ pub fn sample_combat(world: &mut World) {
         .collect();
     let mut entries = Vec::new();
     for (entity, identity, controlled) in roots {
-        let muzzle_valid = super::shooting::muzzle_pose(world, entity).is_ok();
+        let muzzle_valid = super::shooting::muzzle_pose(world, entity).is_ok()
+            && world
+                .get::<crate::robots::RobotRig>(entity)
+                .is_none_or(|rig| rig.fire_ready());
         if let Some(state) = world.get::<RobotCombatState>(entity) {
             entries.push((robot_meta(&identity, state, now, muzzle_valid), controlled));
         }
