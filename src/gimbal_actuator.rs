@@ -253,6 +253,7 @@ fn reset_command_data(
     serde_json::json!({"command_timestamp_ns":command.timestamp_ns,
         "source_round_id":command.source_round_id,"source_frame_sequence":command.source_frame_sequence,
         "fire_level":command.fire_advice,"stage":stage,"activate_timestamp_ns":activation_ns,
+        "yaw_rad":command.yaw_deg.to_radians(),"pitch_rad":-command.pitch_deg.to_radians(),
         "status":"cancelled_by_reset"})
 }
 

@@ -30,6 +30,11 @@ impl LeagueState {
         self.cooling_until
             .map_or(0., |t| t.saturating_sub(now).as_secs_f32())
     }
+    /// Current physical RFID region and elapsed tunnel entry state, for privileged training only.
+    pub fn current_region(&self) -> Option<u8> { self.last_card }
+    pub fn tunnel_progress(&self, now: Duration) -> Option<(u8, f64)> {
+        self.tunnel_start.map(|(endpoint, at)| (endpoint, now.saturating_sub(at).as_secs_f64()))
+    }
     fn read_card(
         &mut self,
         card: Option<FieldRegion>,

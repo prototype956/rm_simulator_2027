@@ -420,6 +420,7 @@ impl PhysicalEnvironment {
         let app = self.app.as_mut().ok_or("reset required")?;
         for _ in 0..CONTROL_DT_NS / self.physics_dt_ns {
             app.update();
+            super::observations::sample(app.world_mut())?;
             measurements::tick(app)?;
             {
                 let w = app.world_mut();
@@ -512,7 +513,9 @@ fn inspect_app(app: &mut App) -> Result<Value, String> {
             .map(|(s,p)| json!({"projectile_id":s.id,"request_id":s.request.id,"position_bevy_m":p.0.to_array()})).collect();
     projectiles.sort_by_key(|p| p["projectile_id"].as_u64());
     let settlement = settlement::data(w);
+    let (actor_feedback, privileged_state) = super::observations::snapshot(w)?;
     Ok(json!({
+        "actor_feedback":actor_feedback,"privileged_state":privileged_state,
         "settlement":settlement,"visual_frames":[],
         "self_weapon":{"version":1,"valid":weapon.is_some(),"sample_ns":frame.sim_time_ns,
             "fire_blocks":weapon.map(|robot| robot.fire_blocks & 0xe0).unwrap_or(0xe0)},
